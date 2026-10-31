@@ -1,1 +1,30 @@
+/* the page never scrolls, bounces or zooms; only the canvas pans and zooms */
+html { height: 100%; }
+html, body { overflow: hidden; overscroll-behavior: none; touch-action: manipulation;
+  -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body { position: fixed; inset: 0; width: 100%; height: auto; -webkit-tap-highlight-color: transparent; }
+
+#canvas, #svg { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+input, textarea { -webkit-user-select: text; user-select: text; }
+button, .btn, label { touch-action: manipulation; }
+#panel { -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
+
+/* notches / home indicator (iPhone, Samsung punch-hole, foldables) */
+#toolbar { top: calc(12px + env(safe-area-inset-top)); right: calc(12px + env(safe-area-inset-right)); }
+#panel { padding-left: calc(14px + env(safe-area-inset-left)); padding-bottom: calc(14px + env(safe-area-inset-bottom)); }
+#masterTape { left: calc(14px + env(safe-area-inset-left)); bottom: calc(14px + env(safe-area-inset-bottom)); }
+#ccwBtn { left: calc(24px + env(safe-area-inset-left)); bottom: calc(100px + env(safe-area-inset-bottom)); }
+#cwBtn  { left: calc(100px + env(safe-area-inset-left)); bottom: calc(24px + env(safe-area-inset-bottom)); }
+
+/* iOS zooms the whole page when a field under 16px gets focus (the two mono text boxes keep their own size) */
+@media (pointer: coarse) {
+  input:not([type=range]):not([type=checkbox]):not([type=color]):not([type=file]),
+  textarea:not(#input):not(#expText), select { font-size: 16px !important; }
+  #input, #expText { font-size: 16px; }
+}
+@media (hover: hover) and (pointer: fine) { button:hover:not(:disabled) { filter: brightness(.95); } }
+button:focus-visible, .btn:focus-within { outline: 2px solid #2A9D8F; outline-offset: 2px; }
+@media (max-width: 760px) { #panel { max-width: 420px; } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
 
