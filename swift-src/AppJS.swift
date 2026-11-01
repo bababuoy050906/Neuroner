@@ -1004,6 +1004,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     if (n) {
       typeSel.value = n.type; syncLineUI(n);
       nbDot.style.background = TYPES[n.type].color;
+      if (window.MMM && window.MMM.onSelect) window.MMM.onSelect(n);
       nbTape.textContent = n.cover ? '👁' : '🩹';
       if (animate) ripple(n);
     }
@@ -2338,6 +2339,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     view,
     nodes: () => nodes,
     roots: () => (main ? [main].concat(floats) : []),
+    selected: () => selected,
     main: () => main,
     visible: n => nodeSet.has(n),
     world: () => world, nodeEls: () => nodeEls, edgeEls: () => edgeEls,
