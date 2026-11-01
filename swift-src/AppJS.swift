@@ -1048,9 +1048,17 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
 
   /* ---------- infinite canvas ---------- */
   function applyView() {
+    if (world && !world.hasAttribute('transform')) { applyViewNow(); return; }   // a freshly drawn map is placed at once
+    if (!viewRaf) viewRaf = requestAnimationFrame(() => { viewRaf = 0; applyViewNow(); });   // many touch events per frame: apply the view once per frame
+  }
+  var viewRaf = 0, lodOn = false, dotsOn = true;
+  function applyViewNow() {
+    if (viewRaf) { cancelAnimationFrame(viewRaf); viewRaf = 0; }
     if (world) world.setAttribute('transform', `translate(${view.x} ${view.y}) scale(${view.k})`);
+    const lod = view.k < 0.2; if (lod !== lodOn) { lodOn = lod; svg.classList.toggle('lod', lod); }
     const s = GRID * view.k;
-    canvas.style.backgroundSize = s + 'px ' + s + 'px';
+    const dots = s >= 8; if (dots !== dotsOn) { dotsOn = dots; canvas.style.backgroundImage = dots ? '' : 'none'; }
+    if (dots) canvas.style.backgroundSize = s + 'px ' + s + 'px';
         canvas.style.backgroundPosition = view.x + 'px ' + view.y + 'px';
     if (window.MMP && window.MMP.onView) window.MMP.onView();
     if (window.MMM && window.MMM.onView) window.MMM.onView();
