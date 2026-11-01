@@ -163,7 +163,7 @@ let paintJS = #"""
     W = Math.max(1, Math.round(r.width)); H = Math.max(1, Math.round(r.height));
     mx = Math.round(W * MARG); my = Math.round(H * MARG);
     let d = Math.min(2, window.devicePixelRatio || 1);
-    while (d > 1 && (W + 2 * mx) * (H + 2 * my) * d * d > 9e6) d -= 0.25;
+    while (d > 1 && (W + 2 * mx) * (H + 2 * my) * d * d > 6e6) d -= 0.25;
     DPR = d;
     base.width = Math.round((W + 2 * mx) * d); base.height = Math.round((H + 2 * my) * d);
     base.style.width = (W + 2 * mx) + 'px'; base.style.height = (H + 2 * my) + 'px';
@@ -204,6 +204,7 @@ let paintJS = #"""
   function renderBase() {
     if (!bctx) return;
     rv = { x: view.x, y: view.y, k: view.k }; lastR = performance.now();
+    rtok++; base.style.display = strokes.length ? '' : 'none';
     base.style.transform = 'translate3d(0,0,0)';
     bctx.setTransform(1, 0, 0, 1, 0, 0); bctx.clearRect(0, 0, base.width, base.height);
     if (!strokes.length) return;
@@ -220,6 +221,7 @@ let paintJS = #"""
   // repaints only a small world rectangle of the committed ink (used by the eraser)
   function renderRegion(b) {
     if (!bctx) return;
+    rtok++;
     if (!sameView()) { renderBase(); return; }
     const k = view.k, pad = 3;
     const x0 = clamp(Math.floor(((b.x0 * k + view.x + mx) - pad) * DPR), 0, base.width), y0 = clamp(Math.floor(((b.y0 * k + view.y + my) - pad) * DPR), 0, base.height);
@@ -235,6 +237,35 @@ let paintJS = #"""
       sty(bctx, s); bctx.stroke(pathOf(s));
     }
     bctx.restore();
+  }
+  // repaints the committed ink in small time slices on a hidden copy, then swaps it in with one fast copy, so no single frame is long
+  let rtok = 0, offC = null;
+  function renderBaseAsync() {
+    if (!bctx) return;
+    if (!strokes.length) { renderBase(); return; }
+    base.style.display = '';
+    const tok = ++rtok, v = { x: view.x, y: view.y, k: view.k }, k = v.k;
+    if (!offC || offC.width !== base.width || offC.height !== base.height) { offC = document.createElement('canvas'); offC.width = base.width; offC.height = base.height; }
+    const o = offC.getContext('2d');
+    o.setTransform(1, 0, 0, 1, 0, 0); o.clearRect(0, 0, offC.width, offC.height);
+    o.setTransform(k * DPR, 0, 0, k * DPR, (v.x + mx) * DPR, (v.y + my) * DPR);
+    const x0 = (-mx - v.x) / k, x1 = (W + mx - v.x) / k, y0 = (-my - v.y) / k, y1 = (H + my - v.y) / k, list = [];
+    for (const s of strokes) {
+      if (lift.size && lift.has(s.id)) continue;
+      const b = bb(s), h = s.w;
+      if (b.x1 + h < x0 || b.x0 - h > x1 || b.y1 + h < y0 || b.y0 - h > y1) continue;
+      list.push(s);
+    }
+    let i = 0;
+    const slice = () => {
+      if (tok !== rtok) return;                             // something newer replaced this repaint
+      const t0 = performance.now();
+      while (i < list.length && performance.now() - t0 < 6) { const s = list[i++]; sty(o, s); o.stroke(pathOf(s)); }
+      if (i < list.length) { requestAnimationFrame(slice); return; }
+      bctx.setTransform(1, 0, 0, 1, 0, 0); bctx.clearRect(0, 0, base.width, base.height); bctx.drawImage(offC, 0, 0);
+      rv = v; lastR = performance.now(); baseXform();       // the copy was made for view v; the CSS transform covers any later movement
+    };
+    requestAnimationFrame(slice);
   }
   let lraf = 0;
   const liveSoon = () => { if (!lraf) lraf = requestAnimationFrame(drawLive); };
@@ -259,7 +290,7 @@ let paintJS = #"""
     const s = view.k / rv.k, tx = view.x - rv.x * s + mx * (1 - s), ty = view.y - rv.y * s + my * (1 - s);
     base.style.transform = 'translate3d(' + tx + 'px,' + ty + 'px,0) scale(' + s + ')';
     const L = -mx + tx, T = -my + ty, R = L + (W + 2 * mx) * s, B = T + (H + 2 * my) * s;
-    return L > 0.5 || T > 0.5 || R < W - 0.5 || B < H - 0.5 || s > 1.5 || s < 0.65;
+    return (L > 0.5 || T > 0.5 || R < W - 0.5 || B < H - 0.5) ? 2 : ((s > 1.5 || s < 0.65 || Math.abs(s - 1) > 0.02) ? 1 : 0);   // 2 = the picture no longer covers the screen, 1 = zoomed
   }
   function syncSvg() { gT.setAttribute('transform', 'translate(' + view.x + ' ' + view.y + ') scale(' + view.k + ')'); }
   function onView() {
@@ -269,8 +300,8 @@ let paintJS = #"""
     if (!strokes.length) rv = { x: view.x, y: view.y, k: view.k };
     else {
       const need = baseXform();
-      if (need && performance.now() - lastR > 80) renderBase();
-      else vT = setTimeout(() => { if (!sameView()) renderBase(); }, need ? 90 : 140);
+      if (need === 2 && performance.now() - lastR > 220) renderBaseAsync();
+      else if (need) vT = setTimeout(renderBaseAsync, 160);
     }
         if (live.size || lift.size) liveSoon();
     if (lz.size || lzLines.length || lzGhosts.length) lzSoon();
@@ -355,7 +386,7 @@ let paintJS = #"""
     return true;
   }
   function commitStroke(s) {
-    s.path = null; strokes.push(s);
+    s.path = null; strokes.push(s); rtok++; base.style.display = '';
     if (sameView() && bctx) {
       bctx.setTransform(view.k * DPR, 0, 0, view.k * DPR, (view.x + mx) * DPR, (view.y + my) * DPR);
       sty(bctx, s); bctx.stroke(pathOf(s));
@@ -1333,7 +1364,13 @@ body.cardview .cdim{opacity:.12!important}
     if (!kids.length) return res;
     const dir = D.dir[p.id] || 'both', xl = D.ext[p.id];
     const mk = (type, ks, ex, key, fl) => { if (!D.del[key]) res.push(Object.assign({ key, type, p: p.id, kids: ks.map(k => k.id), ext: ex.map(g => g.id) }, fl)); };
-    const extOf = (ks, list) => { const s = new Set(list || []), r = []; ks.forEach(k => k.children.forEach(g => { if (s.has(g.id)) r.push(g); })); return r; };
+    const extOf = (ks, list) => {                          // the extended range: a box counts only while its parent is in the range, at any depth
+      const s = new Set(list || []), r = [];
+      if (!s.size) return r;
+      const walk = b => b.children.forEach(g => { if (s.has(g.id)) { r.push(g); walk(g); } });
+      ks.forEach(walk);
+      return r;
+    };
     if (D.cfg.pairs) {                                    // one card per parent-child pair
       kids.forEach(c => { const ex = extOf([c], xl); if (dir !== 'idn') mk('def', [c], ex, 'def:' + p.id + ':' + c.id, {}); if (dir !== 'def') mk('idn', [c], ex, 'idn:' + p.id + ':' + c.id, {}); });
     } else {
@@ -1584,30 +1621,40 @@ body.cardview .cdim{opacity:.12!important}
   function drawPlus() {
     if (!gP) return;
     while (gP.firstChild) gP.removeChild(gP.firstChild);
+    plusBtns = []; plusK = view.k;
     if (!sess) return;
-    const c = sess.cur, k = view.k, vm = vmap(), ext = new Set(c.ext);
+    const c = sess.cur, vm = vmap(), ext = new Set(c.ext), inc = new Set(c.kids.concat(c.ext));
+    // buttons are drawn at a fixed size and only their scale follows the zoom, so panning and zooming never rebuild them
     const btn = (n, right, txt, col, fn) => {
       const cx = right ? n.x + n.w / 2 : n.x - n.w / 2, cy = n.y - n.h / 2, grp = sv('g', { 'class': 'tphd', style: 'cursor:pointer' });
-      grp.appendChild(sv('circle', { cx, cy, r: 13 / k, fill: col, stroke: '#fff', 'stroke-width': 2 / k }));
-      const t = sv('text', { x: cx, y: cy + 6 / k, 'text-anchor': 'middle', 'font-size': 18 / k, fill: '#fff', 'font-family': 'Helvetica,Arial,sans-serif', 'font-weight': 'bold' });
+      grp.appendChild(sv('circle', { cx: 0, cy: 0, r: 13, fill: col, stroke: '#fff', 'stroke-width': 2 }));
+      const t = sv('text', { x: 0, y: 6, 'text-anchor': 'middle', 'font-size': 18, fill: '#fff', 'font-family': 'Helvetica,Arial,sans-serif', 'font-weight': 'bold' });
       t.textContent = txt; t.style.pointerEvents = 'none'; grp.appendChild(t);
       grp.addEventListener('pointerdown', e => e.stopPropagation());
       grp.addEventListener('click', e => { e.stopPropagation(); fn(); });
-      gP.appendChild(grp);
+      gP.appendChild(grp); plusBtns.push({ g: grp, cx, cy });
     };
-    c.kids.forEach(kid => {
-      const kn = vm.get(kid); if (!kn) return;
-      kn.children.forEach(g => { const gn = vm.get(g.id); if (!gn) return; const on = ext.has(g.id); btn(gn, true, on ? '−' : '+', on ? '#E63946' : '#2A9D8F', () => toggleExt(c, gn)); });
-      if (c.grp && c.kids.length > 1) btn(kn, false, '−', '#7B2CBF', () => leaveClick(c, [kid]));
+    // every box already in the range (the children, then anything extended) offers a plus on each of its own children, to any depth
+    inc.forEach(id => {
+      const bn = vm.get(id); if (!bn) return;
+      bn.children.forEach(g => { const gn = vm.get(g.id); if (!gn || c.kids.indexOf(g.id) >= 0) return; const on = ext.has(g.id); btn(gn, true, on ? '−' : '+', on ? '#E63946' : '#2A9D8F', () => toggleExt(c, gn)); });
     });
+    c.kids.forEach(kid => { const kn = vm.get(kid); if (kn && c.grp && c.kids.length > 1) btn(kn, false, '−', '#7B2CBF', () => leaveClick(c, [kid])); });
     if (c.grp) {
       const pn = vm.get(c.p);
       if (pn) pn.children.forEach(ch => { if (c.kids.indexOf(ch.id) < 0) { const cn = vm.get(ch.id); if (cn) btn(cn, false, '+', '#7B2CBF', () => backClick(c, [ch.id])); } });
     }
+    scalePlus();
   }
+  function scalePlus() { const k = view.k; plusBtns.forEach(b => b.g.setAttribute('transform', 'translate(' + b.cx + ' ' + b.cy + ') scale(' + 1 / k + ')')); }
   async function toggleExt(c, g) {
     const arr = extArr(c, false), i = arr ? arr.indexOf(g.id) : -1;
-    if (i >= 0) { arr.splice(i, 1); extTrim(c); changed(); return; }
+    if (i >= 0) {                                          // minus: the boxes beyond it leave the range too
+      const gone = new Set([g.id]); (function w(m) { m.children.forEach(x => { gone.add(x.id); w(x); }); })(g);
+      const keep = arr.filter(id => !gone.has(id));
+      arr.length = 0; keep.forEach(id => arr.push(id));
+      extTrim(c); changed(); return;
+    }
     await addExt(c, [g]);
   }
   async function addExt(c, gs) {
@@ -1632,7 +1679,9 @@ body.cardview .cdim{opacity:.12!important}
       const am = amap();
       cu.kids = cu.kids.filter(k => ids.indexOf(k) < 0);
       ids.forEach(id => {
-        const kn = am.get(id), mine = (cu.ext || []).filter(g => kn && kn.children.some(x => x.id === g));
+        const kn = am.get(id), dsc = new Set();
+        if (kn) (function w(m) { m.children.forEach(x => { dsc.add(x.id); w(x); }); })(kn);
+        const mine = (cu.ext || []).filter(g => dsc.has(g));
         cu.ext = (cu.ext || []).filter(g => mine.indexOf(g) < 0);
         newCustom(c.p, [id], mine, dv || 'both');
       });
@@ -1685,16 +1734,17 @@ body.cardview .cdim{opacity:.12!important}
       P0.setDim(r ? (s => { const b = P0.bbox(s); return (b.x1 < r.x0 || b.x0 > r.x1 || b.y1 < r.y0 || b.y0 > r.y1) ? 0.18 : 1; }) : null);
     }
   }
+  let marksK = 0, plusBtns = [], plusK = 0;
   function build() {
     const w = X.world(); if (!w) return;
     gT = sv('g', { 'class': 'mmov' }); gM = sv('g', { 'class': 'mmov' }); gP = sv('g', { 'class': 'mmov' }); gH = sv('g', { 'class': 'mmov' });
     w.appendChild(gT); w.appendChild(gM); w.appendChild(gP); w.appendChild(gH);
-    drawTape(); drawMarks(); drawPlus(); drawHandles(); applyDim();
+    marksK = view.k; drawTape(); drawMarks(); drawPlus(); drawHandles(); applyDim();
   }
   function refreshOverlay() { [gT, gM, gP, gH].forEach(g => { if (g && g.parentNode) g.parentNode.removeChild(g); }); build(); }
   let lt = 0;
   function onRender() { cardsCache = null; build(); syncMini(); syncConnBtn(); clearTimeout(lt); lt = setTimeout(() => { if (mode === 'C') renderList(); }, 300); }
-  function onView() { posHandles(); placeMini(); if (sess) drawPlus(); if (gM && gM.firstChild) { while (gM.firstChild) gM.removeChild(gM.firstChild); drawMarks(); } }
+  function onView() { posHandles(); placeMini(); if (sess && plusK !== view.k) { plusK = view.k; scalePlus(); } if (gM && gM.firstChild && marksK !== view.k) { marksK = view.k; while (gM.firstChild) gM.removeChild(gM.firstChild); drawMarks(); } }
 
   /* ---------- tap routing ---------- */
   function lockTap(n) {
@@ -1869,7 +1919,8 @@ body.cardview .cdim{opacity:.12!important}
     if (has && sess) {
       const am = amap(), c = sess.cur, pn = am.get(c.p), inCard = new Set(c.kids);
       if (c.grp && pn) { exc = c.kids.length > 1 && ids.some(id => inCard.has(id)); inc = ids.some(id => pn.children.some(k => k.id === id) && !inCard.has(id)); }
-      ext = ids.some(id => { const g = am.get(id); return g && g.parent && c.kids.indexOf(g.parent.id) >= 0 && c.ext.indexOf(g.id) < 0; });
+      const rng = new Set(c.kids.concat(c.ext));
+      ext = ids.some(id => { const g = am.get(id); return g && g.parent && rng.has(g.parent.id) && !rng.has(g.id); });
     }
     sb.study.hidden = !has; sb.del.hidden = !m.length; sb.add.hidden = !(ids.length >= 2 && !m.length);
     sb.conn.hidden = !has; sb.inc.hidden = !inc; sb.exc.hidden = !exc; sb.ext.hidden = !ext;
@@ -1882,7 +1933,8 @@ body.cardview .cdim{opacity:.12!important}
     if (bx.length < 2) { stat('Select a parent and at least one of its children.'); return; }
     const dist = n => Math.hypot(n.x - main.x, n.y - main.y);
     bx.sort((a, b) => a.depth - b.depth || dist(a) - dist(b));
-    const p = bx[0], kids = bx.filter(b => b.parent === p), ks = new Set(kids), ext = bx.filter(b => b.parent && ks.has(b.parent));
+    const p = bx[0], kids = bx.filter(b => b.parent === p), rng = new Set(kids.map(k => k.id)), ext = [];
+    bx.forEach(b => { if (b !== p && b.parent && rng.has(b.parent.id) && !rng.has(b.id)) { ext.push(b); rng.add(b.id); } });   // chains of any depth, parents first
     const used = new Set([p].concat(kids, ext)), left = bx.filter(b => !used.has(b));
     if (!kids.length) { stat('None of the other selected boxes is a child of “' + short(p.text, 24) + '”.'); return; }
     let msg = 'Add a card: parent “' + short(p.text, 24) + '”, ' + kids.length + ' child(ren)' + (ext.length ? ' and ' + ext.length + ' extended box(es)' : '') + '.';
@@ -1908,7 +1960,8 @@ body.cardview .cdim{opacity:.12!important}
     } else if (k === 'add') await addCard(ids);
     else if (k === 'conn') toggleConn(ids);
     else if (k === 'ext' && sess) {
-      const am = amap(), gs = ids.map(id => am.get(id)).filter(g => g && g.parent && sess.cur.kids.indexOf(g.parent.id) >= 0 && sess.cur.ext.indexOf(g.id) < 0);
+      const am = amap(), rng = new Set(sess.cur.kids.concat(sess.cur.ext)), gs = [];
+      ids.map(id => am.get(id)).filter(Boolean).sort((a, b) => a.depth - b.depth).forEach(g => { if (g.parent && rng.has(g.parent.id) && !rng.has(g.id)) { gs.push(g); rng.add(g.id); } });
       if (gs.length) await addExt(sess.cur, gs);
     } else if ((k === 'inc' || k === 'exc') && sess && sess.cur.grp) {
       const c = sess.cur, pn = amap().get(c.p), pk = new Set(pn.children.map(x => x.id)), ch = ids.filter(id => pk.has(id));
