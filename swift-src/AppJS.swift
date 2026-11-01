@@ -907,6 +907,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     applyView();
     applySelection();
     if (window.MMP && window.MMP.onRender) window.MMP.onRender();
+    if (window.MMM && window.MMM.onRender) window.MMM.onRender();
 
     syncTape();
   }
@@ -1051,6 +1052,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     canvas.style.backgroundSize = s + 'px ' + s + 'px';
         canvas.style.backgroundPosition = view.x + 'px ' + view.y + 'px';
     if (window.MMP && window.MMP.onView) window.MMP.onView();
+    if (window.MMM && window.MMM.onView) window.MMM.onView();
     if (store) store.viewSoon();
 
     placeBar();
@@ -1094,7 +1096,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
       if (el) {
         const n = byId(+el.getAttribute('data-id')), p0 = rel(e);
         // hold on a connected box: move it freely (stays connected). hold on a box that is already floating: pick it up.
-        if (n && n !== main) holdT = setTimeout(() => (n.parent ? startFree(n, p0) : startDrag(n, p0)), 450);
+        if (n && n !== main && !(window.MMM && window.MMM.lock())) holdT = setTimeout(() => (n.parent ? startFree(n, p0) : startDrag(n, p0)), 450);
       }
     } else if (ptrs.size === 2) {
       drag = null;
@@ -1123,7 +1125,9 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     if (dnode) { dropDrag(); ptrs.delete(e.pointerId); drag = null; pinch = null; return; }
     if (drag && !drag.moved && ptrs.size === 1) {
       const el = drag.target.closest && drag.target.closest('[data-id]');
-      if (el) tapNode(byId(+el.getAttribute('data-id')));
+      const tn = el ? byId(+el.getAttribute('data-id')) : null;
+      if (window.MMM && window.MMM.lockTap && window.MMM.lockTap(tn)) { /* handled by the current mode */ }
+      else if (el) tapNode(tn);
       else clearSel();
     }
     ptrs.delete(e.pointerId); drag = null; if (ptrs.size < 2) pinch = null;
@@ -1878,6 +1882,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
       }))
     };
     if (withInk) { const k = inkGet(); if (k) d.drawings = k; }     // drawings live only in the file
+    const cc = cdGet(false); if (cc) d.cards = cc;
     return d;
   }
   // checks the data and turns it into the app's own saved form, so the normal restore does the rest
@@ -1921,7 +1926,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
         ink.s.push({ i: id, k: q.k === 'hl' || q.k === 'marker' ? q.k : 'pen', c: typeof q.c === 'string' ? q.c : '#000000', w: num(q.w) || 2, o: num(q.o) || 1, p: q.p });
       });
     }
-    return { v: DATA_V, txt: '', main: m0, floats: fl, lenK: pct != null ? Math.max(1, Math.min(3, pct / 100)) : 1.2, levels: lv, ink };
+    return { cd: (o.cards && typeof o.cards === 'object') ? o.cards : undefined, v: DATA_V, txt: '', main: m0, floats: fl, lenK: pct != null ? Math.max(1, Math.min(3, pct / 100)) : 1.2, levels: lv, ink };
   }
   function applyImport(o, withInk) {
     try {
@@ -2025,12 +2030,12 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     o.k.forEach(k => deser(k, n, depth + 1));
     return n;
   }
-  function snapshot() {
+  function snapshot(h) {
     if (!main) return null;
     return {
       v: DATA_V, txt: input.value, main: ser(main),
       floats: floats.map(f => ({ x: f.fx, y: f.fy, d: f.depth, n: ser(f), s: f.src ? f.src.id : null, ox: f.sox, oy: f.soy })),
-            ink: inkGet(), lenK, levels, view: { x: view.x, y: view.y, k: view.k }
+            ink: inkGet(), cd: cdGet(h), lenK, levels, view: { x: view.x, y: view.y, k: view.k }
 
     };
   }
@@ -2046,7 +2051,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     input.value = s.txt || '';
     Object.assign(view, s.view || {});
     fixIds();
-        inkSet(s.ink);
+        inkSet(s.ink); cdSet(s.cd);
     const idm = new Map(); walkAll(n => idm.set(n.id, n));
 
     floats.forEach(r => { r.src = r._s != null ? (idm.get(r._s) || null) : null; delete r._s; });
@@ -2084,7 +2089,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     return true;
   };
   function pushHist() {
-    const s = snapshot(); if (!s) return;
+    const s = snapshot(true); if (!s) return;
     s.view = null;                                      // panning/zooming is not an undo step
     const ink = s.ink; s.ink = undefined;               // ink is kept by reference (each stroke is stored once), not re-converted every time
     const j = JSON.stringify(s), last = hist[hi];
@@ -2126,7 +2131,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
   }
   function newMap() {
     main = null; floats = []; setNodes([]); lists = []; mapName = ''; dirty = false;
-        inkSet(null);
+        inkSet(null); cdSet(null);
     input.value = ''; libName.value = ''; svg.innerHTML = '';
  nodeEls = new Map(); edgeEls = new Map(); indEls = [];
     freeCam(); disarmDel();
@@ -2198,7 +2203,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
       statusEl.textContent = 'Building…';
       setTimeout(() => {
         try {
-                    inkSet(null);
+                    inkSet(null); cdSet(null);
           main = root; floats = []; levels = {}; editNode = null; nodeEdit.hidden = true; mover = null; dnode = null;
 
           freeCam(); disarmDel();
@@ -2327,9 +2332,17 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     /* ---------- bridge for the painting package (PaintJS.swift) ---------- */
   function inkGet() { return window.MMP ? window.MMP.get() : window.__inkPending; }
   function inkSet(s) { if (window.MMP) window.MMP.set(s); else window.__inkPending = s; }
+  function cdGet(h) { return window.MMM ? window.MMM.get(h) : window.__cdPending; }
+  function cdSet(s) { if (window.MMM) window.MMM.set(s); else window.__cdPending = s || null; }
   window.MMX = {
     view,
     nodes: () => nodes,
+    roots: () => (main ? [main].concat(floats) : []),
+    main: () => main,
+    visible: n => nodeSet.has(n),
+    world: () => world, nodeEls: () => nodeEls, edgeEls: () => edgeEls,
+    applyView: () => applyView(),
+    persist: () => { if (store) store.request(); },
         isMain: n => n === main,
     deliver: (pdf, name) => deliverPdf(pdf, name),
 
