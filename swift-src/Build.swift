@@ -95,10 +95,6 @@ button.rbig{height:40px;font-size:13px;width:100%;padding:0}
 .rot:active:not(:disabled){transform:scale(.94)}
 #ccwBtn{left:24px;bottom:100px}
 #cwBtn{left:100px;bottom:24px}
-
-/* speed: zooming keeps SVG text as shapes (no re-layout of every label), and labels hide when too small to read */
-#svg text{text-rendering:geometricPrecision}
-#svg.lod text{display:none}
 """#
 
 let bodyHTML = #"""
