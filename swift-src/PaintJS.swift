@@ -350,6 +350,7 @@ let paintJS = #"""
   window.MMP = {
         get: getInk, set: setInk, bounds: inkBounds, draw: inkDraw, onView, onRender,
     flush: flushNow, hard: () => live.size > 0 || !!act,
+    clear: () => clearSel(),
     relayout: () => { if (open) placePanel(); if (sel) placeSelBar(); if (popKind) placePop(); },
     redraw: () => renderBase(), bbox: bb, selIds: () => (sel ? [...sel.b] : []),
     setDim: f => { dimK = f; renderBase(); liveSoon(); },
