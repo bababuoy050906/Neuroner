@@ -17,6 +17,7 @@ let paintJS = #"""
            // extra bitmap around the screen · points after which a long stroke is cut into pieces
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const f2 = v => Math.round(v * 100) / 100;
+  const RB = () => (window.MMM && window.MMM.bottom ? window.MMM.bottom() : 0);   // height reserved by the card bottom bar
   const r1 = v => Math.round(v * 20) / 20;
   const stat = m => { const s = document.getElementById('status'); if (s) s.textContent = m; };
   function buzz() {
@@ -349,6 +350,7 @@ let paintJS = #"""
   window.MMP = {
         get: getInk, set: setInk, bounds: inkBounds, draw: inkDraw, onView, onRender,
     flush: flushNow, hard: () => live.size > 0 || !!act,
+    relayout: () => { if (open) placePanel(); if (sel) placeSelBar(); if (popKind) placePop(); },
     redraw: () => renderBase(), bbox: bb, selIds: () => (sel ? [...sel.b] : []),
     setDim: f => { dimK = f; renderBase(); liveSoon(); },
 
@@ -650,7 +652,7 @@ let paintJS = #"""
     let top = y0 - bh - (handles ? 46 : 12);
     if (top < 8) top = y1 + 14;
     selBar.style.left = clamp((x0 + x1) / 2 - bw / 2, 8, Math.max(8, r.width - bw - 8)) + 'px';
-    selBar.style.top = clamp(top, 8, Math.max(8, r.height - bh - 8)) + 'px';
+    selBar.style.top = clamp(top, 8, Math.max(8, r.height - bh - 8 - RB())) + 'px';
   }
   function updateSelBar() {
     selBar.querySelector('[data-a="col"]').hidden = !(sel && sel.s.size);
@@ -1165,7 +1167,7 @@ let paintJS = #"""
     if (popKind === 'recolor') { const sr = selBar.getBoundingClientRect(); x = sr.left - r.left; y = sr.top - r.top + sr.height + 8; if (y + ph > r.height - 8) y = sr.top - r.top - ph - 8; }
     else if (P.pos.o === 'v') { x = (px + pnt.offsetWidth / 2 < r.width / 2) ? px + pnt.offsetWidth + 8 : px - pw - 8; y = py; }
     else { x = px; y = (py + pnt.offsetHeight / 2 < r.height / 2) ? py + pnt.offsetHeight + 8 : py - ph - 8; }
-    pop.style.left = clamp(x, 8, Math.max(8, r.width - pw - 8)) + 'px'; pop.style.top = clamp(y, 8, Math.max(8, r.height - ph - 8)) + 'px';
+    pop.style.left = clamp(x, 8, Math.max(8, r.width - pw - 8)) + 'px'; pop.style.top = clamp(y, 8, Math.max(8, r.height - ph - 8 - RB())) + 'px';
   }
 
   /* ---------- the movable tool panel ---------- */
@@ -1191,7 +1193,7 @@ let paintJS = #"""
     pnt.classList.toggle('v', P.pos.o === 'v'); pnt.classList.toggle('h', P.pos.o === 'h');
     const r = host.getBoundingClientRect(), pw = pnt.offsetWidth, ph = pnt.offsetHeight;
     pnt.style.left = clamp(P.pos.x, 8, Math.max(8, r.width - pw - 8)) + 'px';
-    pnt.style.top = clamp(P.pos.y, 8, Math.max(8, r.height - ph - 8)) + 'px';
+    pnt.style.top = clamp(P.pos.y, 8, Math.max(8, r.height - ph - 8 - RB())) + 'px';
   }
   // on release the panel docks to the nearest edge and turns vertical (left/right edge) or horizontal (top/bottom edge)
   function snapPanel() {
@@ -1204,8 +1206,8 @@ let paintJS = #"""
     pnt.classList.toggle('v', P.pos.o === 'v'); pnt.classList.toggle('h', P.pos.o === 'h');
     pw = pnt.offsetWidth; ph = pnt.offsetHeight;
     let nx = x, ny = y;
-    if (e === 'l') nx = 8; else if (e === 'r') nx = r.width - pw - 8; else if (e === 't') ny = 64; else ny = r.height - ph - 8;   // top edge leaves the toolbar free
-    if (e === 'l' || e === 'r') ny = clamp(ny, 8, Math.max(8, r.height - ph - (e === 'l' ? 170 : 8)));                                 // left edge leaves the tape buttons free
+    if (e === 'l') nx = 8; else if (e === 'r') nx = r.width - pw - 8; else if (e === 't') ny = 64; else ny = r.height - ph - 8 - RB();   // top edge leaves the toolbar free
+    if (e === 'l' || e === 'r') ny = clamp(ny, 8, Math.max(8, r.height - ph - RB() - (e === 'l' ? 170 : 8)));                                 // left edge leaves the tape buttons free
     else nx = clamp(nx, e === 'b' ? 170 : 8, Math.max(8, r.width - pw - 8));
     P.pos.x = nx; P.pos.y = ny; placePanel(); save();
   }
@@ -1257,74 +1259,97 @@ let paintJS = #"""
   const X = window.MMX, P0 = window.MMP;
   if (!X || !P0) return;
   const view = X.view, host = document.getElementById('canvas'), tbar = document.getElementById('toolbar'), menuBtn = document.getElementById('menuBtn');
-  const NS = 'http://www.w3.org/2000/svg', MINT = 0.06;
+  const NS = 'http://www.w3.org/2000/svg', MINT = 0.06, RH = 58;
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const el = (t, c, h) => { const e = document.createElement(t); if (c) e.className = c; if (h != null) e.innerHTML = h; return e; };
   const sv = (t, a) => { const e = document.createElementNS(NS, t); for (const k in a) e.setAttribute(k, a[k]); return e; };
-  const stat = m => { const s = document.getElementById('status'); if (s) s.textContent = m; };
   const short = (t, n) => { n = n || 28; return t.length > n ? t.slice(0, n - 1) + '…' : t; };
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const TL = { def: 'Define', idn: 'Identify', enum: 'Enumerate' }, TC = { def: '#457B9D', idn: '#E63946', enum: '#7B2CBF' };
   const noProp = n => ['pointerdown', 'pointerup', 'pointermove', 'pointercancel', 'wheel'].forEach(t => n.addEventListener(t, e => e.stopPropagation()));
+  const idle = fn => (window.requestIdleCallback ? window.requestIdleCallback(fn, { timeout: 900 }) : setTimeout(fn, 50));
+  const NOCARDS = 'No cards yet. Lasso a parent and its children, then tap Add card.';
 
-  /* ---------- styles ---------- */
+  /* ---------- styles (sizes follow the screen and the safe areas) ---------- */
   const st = document.createElement('style');
   st.textContent = `
+:root{--kb:0px}
 body.mode-b #panel,body.mode-c #panel{display:none}
 .mpanel{width:340px;max-width:100%;background:var(--panel);border-right:1px solid var(--line);padding:14px;display:none;flex-direction:column;gap:10px;z-index:5;overflow:auto;overscroll-behavior:contain}
 .mpanel h1{font-size:18px;margin:0}
-.mpanel input[type=search],.mpanel select{width:100%;padding:8px;font-size:14px;border:1px solid var(--fieldb);border-radius:8px;background:var(--field);color:var(--fg)}
+.mpanel input[type=search],.mpanel select{width:100%;padding:8px;font-size:16px;min-height:44px;border:1px solid var(--fieldb);border-radius:8px;background:var(--field);color:var(--fg)}
 .mpanel .tg{display:flex;align-items:flex-start;gap:8px;font-size:13px;line-height:1.3;margin-top:8px}
 .mpanel .tg input{width:22px;height:22px;flex:none;accent-color:#2A9D8F;margin:0}
 .mpanel .note{color:var(--muted);font-size:12px;line-height:1.35}
+.mpanel button{min-height:44px}
+#panelC{overflow:hidden}
+#pcList{position:relative;overflow:auto;flex:1 1 260px;min-height:200px;border-top:1px solid var(--line);-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+#pcSp{width:1px}
+#pcRows{position:absolute;left:0;right:0;top:0;will-change:transform}
 @media (max-width:760px){.mpanel{position:absolute;inset:0 auto 0 0;width:88%;transform:translateX(-100%);transition:transform .2s}.mpanel.open{transform:none}}
 body.mode-b #panelB,body.mode-c #panelC{display:flex}
 body.collapsed .mpanel{display:none!important}
 body.mode-b #nodebar,body.mode-c #nodebar,body.mode-b #rpanel,body.mode-c #rpanel,body.mode-b #unhide,body.mode-c #unhide,body.mode-b #editor,body.mode-c #editor,body.mode-b #masterTape,body.mode-c #masterTape,body.mode-b .rot,body.mode-c .rot{display:none!important}
 #toolbar{flex-wrap:wrap;justify-content:flex-end;max-width:calc(100% - 24px)}
+#toolbar button,#nodebar button,#pnt button,#pSel button{min-width:44px;min-height:44px}
+#pnt button,#pSel button{width:44px;height:44px}
+#nodebar button{width:44px;height:44px}
 #tapeBtn.on{background:#2A9D8F;border-color:#2A9D8F;color:#fff}
 #nodebar button.cn{background:#2A9D8F;border-color:#2A9D8F;color:#fff}
-#pSel{flex-wrap:wrap;max-width:min(420px,calc(100% - 16px))}
+#pSel{flex-wrap:wrap;max-width:min(440px,calc(100% - 16px))}
 #pSel button[hidden]{display:none}
-#pSel button[data-m]{width:auto;padding:0 10px;font-size:13px}
+#pSel button[data-m]{width:auto;padding:0 12px;font-size:14px}
 #cnBar{position:absolute;z-index:5;display:flex;gap:6px;padding:5px;background:var(--pop);color:var(--fg);border:1px solid var(--fieldb);border-radius:18px;box-shadow:0 5px 18px rgba(0,0,0,.3)}
 #cnBar[hidden]{display:none}
-#cnBar button{min-height:38px;font-size:13px;padding:0 10px}
+#cnBar button{min-height:44px;font-size:14px;padding:0 12px}
 #cnBar button[hidden]{display:none}
 #cnBar button.on{background:#2A9D8F;border-color:#2A9D8F;color:#fff}
-#mmMenu{position:absolute;right:12px;top:calc(60px + env(safe-area-inset-top));z-index:7;background:var(--pop);color:var(--fg);border:1px solid var(--fieldb);border-radius:12px;padding:6px;box-shadow:0 6px 22px rgba(0,0,0,.3);display:flex;flex-direction:column;gap:4px;min-width:190px}
+#mmMenu{position:absolute;right:12px;top:calc(64px + env(safe-area-inset-top));z-index:7;background:var(--pop);color:var(--fg);border:1px solid var(--fieldb);border-radius:12px;padding:6px;box-shadow:0 6px 22px rgba(0,0,0,.3);display:flex;flex-direction:column;gap:4px;min-width:200px}
 #mmMenu[hidden]{display:none}
-#mmMenu button{text-align:left;min-height:42px}
+#mmMenu button{text-align:left;min-height:46px}
 #mmMenu button.on{background:#2A9D8F;border-color:#2A9D8F;color:#fff}
 #mmMenu hr{width:100%;border:0;border-top:1px solid var(--line);margin:2px 0}
-#cardBar{position:absolute;left:50%;bottom:calc(14px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:5;max-width:calc(100% - 16px);background:var(--pop);color:var(--fg);border:1px solid var(--fieldb);border-radius:16px;padding:8px 10px;box-shadow:0 6px 22px rgba(0,0,0,.3);display:flex;flex-direction:column;gap:6px;align-items:center}
-#cardBar[hidden]{display:none}
-#cardBar .cbt{font-size:13px;text-align:center;max-width:520px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#cardBar .cbr{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;align-items:center}
-#cardBar button,#cardBar select{min-height:40px;font-size:14px}
-#cardBar select{border:1px solid var(--fieldb);background:var(--field);color:var(--fg);border-radius:8px;padding:4px}
+#mmToast{position:absolute;left:50%;top:calc(10px + env(safe-area-inset-top));transform:translateX(-50%);z-index:9;max-width:min(92%,520px);background:rgba(20,24,32,.92);color:#fff;border-radius:12px;padding:8px 14px;font-size:13px;line-height:1.35;pointer-events:none;text-align:center}
+#mmToast[hidden]{display:none}
+#cbTop{position:absolute;left:50%;transform:translateX(-50%);top:64px;z-index:5;width:min(calc(100% - 16px),560px);display:flex;gap:6px;align-items:center;background:var(--pop);color:var(--fg);border:1px solid var(--fieldb);border-radius:14px;padding:6px 8px;box-shadow:0 6px 22px rgba(0,0,0,.3)}
+#cbTop[hidden],#cbBot[hidden]{display:none}
+#cbTop .cnt{flex:1;min-width:0;font-size:clamp(12px,3.4vw,14px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#cbTop button,#cbTop select{min-height:44px;min-width:44px;font-size:clamp(13px,3.6vw,15px)}
+#cbTop select{border:1px solid var(--fieldb);background:var(--field);color:var(--fg);border-radius:8px;padding:4px;max-width:34vw}
+#cbBot{position:absolute;left:0;right:0;bottom:var(--kb);z-index:5;display:flex;flex-direction:column;gap:6px;padding:8px max(8px,env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left));background:var(--pop);color:var(--fg);border-top:1px solid var(--fieldb);box-shadow:0 -4px 16px rgba(0,0,0,.18)}
+body.kbopen #cbBot{padding-bottom:8px}
+@media (min-width:768px){#cbBot{left:50%;right:auto;transform:translateX(-50%);width:min(calc(100% - 16px),560px);bottom:calc(var(--kb) + max(8px,env(safe-area-inset-bottom)));border:1px solid var(--fieldb);border-radius:16px;padding:8px}}
+#cbBot .brow{display:flex;gap:8px;align-items:stretch}
+#cbBot button{min-height:clamp(48px,8vh,64px);font-size:clamp(15px,4vw,18px);border-radius:12px;padding:0 10px}
+#cbBot button:disabled{opacity:.4}
+#cbBot .wide{flex:1}
+#cbBot .bi{width:clamp(48px,14vw,64px);flex:none;font-size:clamp(20px,6vw,26px)}
+#cbBot .rt{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;min-width:0}
+#cbBot .rt button{width:100%}
+#cbBot .rt small{color:var(--muted);font-size:12px}
 body.cardview .node.dim,body.cardview .node.semi,body.cardview .edge.dim,body.cardview .edge.semi{opacity:1}
 body.cardview .cdim{opacity:.12!important}
 .cblur{filter:blur(3px)}
-.crow{display:flex;gap:6px;align-items:center;padding:6px 4px;border-bottom:1px solid var(--line);cursor:pointer}
+.crow{display:flex;gap:6px;align-items:center;padding:6px 4px;border-bottom:1px solid var(--line);cursor:pointer;height:${RH}px;box-sizing:border-box}
 .crow.cur{background:rgba(42,157,143,.15)}
-.crow .cm{flex:1;min-width:0;font-size:13px}
+.crow .cm{flex:1;min-width:0;font-size:13px;overflow:hidden}
+.crow .cm b{display:inline-block;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
 .crow .cm small{display:block;color:var(--muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .crow .cty{display:inline-block;color:#fff;border-radius:6px;padding:0 6px;font-size:11px;margin-right:4px}
-.crow button{padding:4px 8px;font-size:14px}
+.crow button{padding:4px 8px;font-size:15px;min-width:44px;min-height:44px}
 #mmDlg{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:80}
-#mmDlg .card{background:var(--pop);color:var(--fg);padding:16px;border-radius:12px;width:min(92vw,360px);display:flex;flex-direction:column;gap:12px;box-shadow:0 10px 30px rgba(0,0,0,.4)}
+#mmDlg .card{background:var(--pop);color:var(--fg);padding:16px;border-radius:12px;width:min(92vw,380px);display:flex;flex-direction:column;gap:12px;box-shadow:0 10px 30px rgba(0,0,0,.4)}
+#mmDlg button{min-height:46px}
 `;
   document.head.appendChild(st);
 
   /* ---------- card data (saved with the map) ---------- */
-  // tape: box → [x0,y0,x1,y1] · dir/cdir: parent / child direction · ext: extended grandchildren per parent
-  // exc: children left out of a parent's group card · del: deleted card keys · conn: connector boxes
-  // custom: cards added with the lasso {id,p,kids,ext,dir} · sched: review schedules
-  const D = { tape: {}, dir: {}, cdir: {}, ext: {}, exc: {}, del: {}, conn: {}, custom: {}, cseq: 0, sched: {}, cfg: { pairs: false, blur: false } };
+  // tape: box → [x0,y0,x1,y1] · conn: connector boxes · custom: every card is one of these {id,p,kids,ext,dir}
+  // ext = extended boxes at any depth (each one's parent must be in the range) · del: deleted card keys · sched: review schedules
+  // Cards are never made automatically. Older saves (no v:2) are converted once, keeping their cards and schedules.
+  const D = { tape: {}, conn: {}, custom: {}, cseq: 0, del: {}, sched: {}, cfg: { blur: false } };
   const cp = o => JSON.parse(JSON.stringify(o));
-  const OBJ = ['tape', 'dir', 'cdir', 'ext', 'exc', 'del', 'conn', 'custom'];
-  function reset() { OBJ.forEach(f => { D[f] = {}; }); D.sched = {}; D.cseq = 0; D.cfg = { pairs: false, blur: false }; }
+  function reset() { D.tape = {}; D.conn = {}; D.custom = {}; D.cseq = 0; D.del = {}; D.sched = {}; D.cfg = { blur: false }; }
   const roots = () => X.roots();
   function amap() { const m = new Map(); roots().forEach(r => (function w(n) { m.set(n.id, n); n.children.forEach(w); })(r)); return m; }
   const vmap = () => new Map(X.nodes().map(n => [n.id, n]));
@@ -1334,92 +1359,101 @@ body.cardview .cdim{opacity:.12!important}
       Object.keys(D.tape).forEach(k => { if (!am.has(+k)) delete D.tape[k]; });
       Object.keys(D.conn).forEach(k => { if (!am.has(+k)) delete D.conn[k]; });
       Object.keys(D.custom).forEach(k => { if (!am.has(D.custom[k].p)) delete D.custom[k]; });
-      Object.keys(D.sched).forEach(k => { const q = k.split(':'); if (q[0] === 'cu') { if (!D.custom[q[1]]) delete D.sched[k]; } else if (!am.has(+q[1])) delete D.sched[k]; });
+      Object.keys(D.sched).forEach(k => { const q = k.split(':'); if (!D.custom[q[1]]) delete D.sched[k]; });
     }
-    const o = { tape: D.tape, dir: D.dir, cdir: D.cdir, ext: D.ext, exc: D.exc, del: D.del, conn: D.conn, custom: D.custom, cseq: D.cseq, cfg: D.cfg };
+    const o = { v: 2, tape: D.tape, conn: D.conn, custom: D.custom, cseq: D.cseq, del: D.del, cfg: D.cfg };
     if (h) o.h = 1; else o.sched = D.sched;
     return o;
   }
+  // one-time conversion of the old automatic cards into real cards (same boxes, same schedules, same deletions)
+  function migrate(o) {
+    const L = { dir: o.dir || {}, cdir: o.cdir || {}, ext: o.ext || {}, exc: o.exc || {} }, pairs = !!(o.cfg && o.cfg.pairs);
+    const odel = o.del || {}, osch = o.sched || {}, nd = {}, ns = {};
+    Object.keys(D.del).forEach(k => { if (k.indexOf('cu:') === 0) nd[k] = 1; });
+    Object.keys(D.sched).forEach(k => { if (k.indexOf('cu:') === 0) ns[k] = D.sched[k]; });
+    const add = (p, ks, ex, dir, kd, ki) => {
+      const id = ++D.cseq, cu = { id, p: p.id, kids: ks.map(k => k.id), dir };
+      if (ex.length) cu.ext = ex;
+      D.custom[id] = cu;
+      [[kd, 'cu:' + id + ':def'], [ki, 'cu:' + id + ':idn']].forEach(q => { if (odel[q[0]]) nd[q[1]] = 1; if (osch[q[0]]) ns[q[1]] = osch[q[0]]; });
+    };
+    amap().forEach(p => {
+      const kids = p.children; if (!kids.length) return;
+      const dir = L.dir[p.id] || 'both', xl = new Set(L.ext[p.id] || []);
+      const extOf = ks => { const r = []; ks.forEach(k => k.children.forEach(g => { if (xl.has(g.id)) r.push(g.id); })); return r; };
+      if (pairs) kids.forEach(c => add(p, [c], extOf([c]), dir, 'def:' + p.id + ':' + c.id, 'idn:' + p.id + ':' + c.id));
+      else {
+        const exc = new Set(L.exc[p.id] || []), inc = kids.filter(k => !exc.has(k.id));
+        if (inc.length) add(p, inc, extOf(inc), dir, (inc.length > 1 ? 'enum' : 'def') + ':' + p.id, 'idn:' + p.id);
+        kids.filter(k => exc.has(k.id)).forEach(c => add(p, [c], extOf([c]), L.cdir[c.id] || 'both', 'def:' + p.id + ':' + c.id, 'idn:' + p.id + ':' + c.id));
+      }
+    });
+    D.del = nd; if (!o.h) D.sched = ns;
+  }
   function setData(o) {
-    if (!o) reset();
+    if (!o) { reset(); ustack = []; }
     else {
-      OBJ.forEach(f => { D[f] = o[f] && typeof o[f] === 'object' ? cp(o[f]) : {}; });
-      D.cseq = Math.max(D.cseq, +o.cseq || 0);            // ids of added cards are never reused
-      D.cfg = Object.assign({ pairs: false, blur: false }, o.cfg || {});
-      if (!o.h) D.sched = o.sched && typeof o.sched === 'object' ? cp(o.sched) : {};   // undo never touches schedules
+      D.tape = o.tape && typeof o.tape === 'object' ? cp(o.tape) : {};
+      D.conn = o.conn && typeof o.conn === 'object' ? cp(o.conn) : {};
+      D.custom = o.custom && typeof o.custom === 'object' ? cp(o.custom) : {};
+      D.del = o.del && typeof o.del === 'object' ? cp(o.del) : {};
+      D.cseq = Math.max(D.cseq, +o.cseq || 0);             // ids of cards are never reused
+      Object.keys(D.custom).forEach(k => { D.cseq = Math.max(D.cseq, +k || 0); });
+      D.cfg = Object.assign({ blur: false }, o.cfg || {});
+      if (!o.h) { D.sched = o.sched && typeof o.sched === 'object' ? cp(o.sched) : {}; ustack = []; }   // undo never touches schedules
+      if (o.v !== 2 && X.main()) { migrate(o); if (ready) setTimeout(() => X.persist(), 0); }
     }
-    cardsCache = null;
+    inval();
     if (!ready) return;
     if (!o) { if (sess) endSession(true); } else reconcile();
-    refreshPanel(); refreshOverlay(); syncBar(); syncMini();
+    refreshPanel(); refreshOverlay(); syncBar(); syncMini(); renderList();
   }
 
-  /* ---------- cards ---------- */
-  let cardsCache = null, seqCache = null;
-  const cards = () => cardsCache || (cardsCache = genCards());
-  const seq = () => { cards(); return seqCache; };
-  const cuList = p => Object.keys(D.custom).map(k => D.custom[k]).filter(c => c.p === p.id);
-  function cardsOf(p) {
-    const res = [], kids = p.children;
-    if (!kids.length) return res;
-    const dir = D.dir[p.id] || 'both', xl = D.ext[p.id];
-    const mk = (type, ks, ex, key, fl) => { if (!D.del[key]) res.push(Object.assign({ key, type, p: p.id, kids: ks.map(k => k.id), ext: ex.map(g => g.id) }, fl)); };
-    const extOf = (ks, list) => {                          // the extended range: a box counts only while its parent is in the range, at any depth
-      const s = new Set(list || []), r = [];
-      if (!s.size) return r;
-      const walk = b => b.children.forEach(g => { if (s.has(g.id)) { r.push(g); walk(g); } });
-      ks.forEach(walk);
-      return r;
-    };
-    if (D.cfg.pairs) {                                    // one card per parent-child pair
-      kids.forEach(c => { const ex = extOf([c], xl); if (dir !== 'idn') mk('def', [c], ex, 'def:' + p.id + ':' + c.id, {}); if (dir !== 'def') mk('idn', [c], ex, 'idn:' + p.id + ':' + c.id, {}); });
-    } else {
-      const exc = new Set(D.exc[p.id] || []), inc = kids.filter(k => !exc.has(k.id)), out = kids.filter(k => exc.has(k.id));
-      if (inc.length) {
-        const ex = extOf(inc, xl), dt = inc.length > 1 ? 'enum' : 'def';
-        if (dir !== 'idn') mk(dt, inc, ex, dt + ':' + p.id, { grp: true });
-        if (dir !== 'def') mk('idn', inc, ex, 'idn:' + p.id, { grp: true });
-      }
-      out.forEach(c => { const cd = D.cdir[c.id] || 'both', ex = extOf([c], xl); if (cd !== 'idn') mk('def', [c], ex, 'def:' + p.id + ':' + c.id, { own: true }); if (cd !== 'def') mk('idn', [c], ex, 'idn:' + p.id + ':' + c.id, { own: true }); });
-    }
-    cuList(p).forEach(cu => {                              // cards added with the lasso
-      const ks = (cu.kids || []).map(id => kids.find(k => k.id === id)).filter(Boolean);
-      if (!ks.length) return;
-      const ex = extOf(ks, cu.ext), dt = ks.length > 1 ? 'enum' : 'def', cd = cu.dir || 'both';
-      if (cd !== 'idn') mk(dt, ks, ex, 'cu:' + cu.id + ':def', { grp: true, cust: cu.id });
-      if (cd !== 'def') mk('idn', ks, ex, 'cu:' + cu.id + ':idn', { grp: true, cust: cu.id });
-    });
-    return res;
-  }
-  // the cards that hang under one box: Enumerate first, then Define, then Identify
-  function boxCards(n) {
+  /* ---------- cards: worked out once, reused until boxes or cards change ---------- */
+  let cache = null, listDirty = true, sig = 0, ustack = [];
+  const inval = () => { cache = null; listDirty = true; };
+  const cards = () => (cache || (cache = rebuildCards())).all;
+  const seq = () => (cache || (cache = rebuildCards())).seq;
+  function rebuildCards() {
+    const am = amap(), main = X.main(), byP = new Map(), all = [], out = [];
+    if (!main) return { all, seq: out };
     const rk = { enum: 0, def: 1, idn: 2 };
-    return cardsOf(n).map((c, i) => [c, i]).sort((a, b) => rk[a[0].type] - rk[b[0].type] || a[1] - b[1]).map(x => x[0]);
-  }
-  // default order: the first main branch (closest to the centre, first sibling) outward, sibling order first to last,
-  // each sub-branch completely before the next. The centre box's own cards are not part of it.
-  function genCards() {
-    const main = X.main(), out = [];
-    seqCache = out;
-    if (!main) return out;
-    const walk = n => { if (n.children.length) boxCards(n).forEach(c => out.push(c)); n.children.forEach(walk); };
+    Object.keys(D.custom).forEach(k => {
+      const cu = D.custom[k], p = am.get(cu.p); if (!p) return;
+      const ks = (cu.kids || []).map(id => am.get(id)).filter(n => n && n.parent === p); if (!ks.length) return;
+      const rng = new Set(ks.map(n => n.id)), ex = [], rest = (cu.ext || []).slice();
+      for (let grew = true; grew && rest.length;) {                     // an extended box counts only if its parent is in the range
+        grew = false;
+        for (let i = rest.length - 1; i >= 0; i--) { const g = am.get(rest[i]); if (g && g.parent && rng.has(g.parent.id)) { rng.add(g.id); ex.push(g.id); rest.splice(i, 1); grew = true; } }
+      }
+      const kid = ks.map(n => n.id), dt = ks.length > 1 ? 'enum' : 'def', dir = cu.dir || 'both';
+      const mk = (type, suf) => { const key = 'cu:' + cu.id + ':' + suf; if (D.del[key]) return; const c = { key, type, cust: cu.id, p: cu.p, kids: kid, ext: ex }; (byP.get(cu.p) || (byP.set(cu.p, []), byP.get(cu.p))).push(c); all.push(c); };
+      if (dir !== 'idn') mk(dt, 'def');
+      if (dir !== 'def') mk('idn', 'idn');
+    });
+    byP.forEach(l => l.sort((a, b) => rk[a.type] - rk[b.type] || a.cust - b.cust));
+    // default order: first main branch (closest to the centre) outward, sibling order, each sub-branch finished before the next;
+    // inside a box: Enumerate, Define, Identify. The centre's own cards are not part of the sequence.
+    const walk = n => { const l = byP.get(n.id); if (l) l.forEach(c => out.push(c)); n.children.forEach(walk); };
     main.children.forEach(walk);
     roots().slice(1).forEach(walk);
-    return out.concat(boxCards(main));                    // centre cards stay in the browser only
+    const cc = byP.get(main.id);
+    return { all: cc ? out.concat(cc) : out, seq: out };
   }
   const cardBoxes = c => [c.p].concat(c.kids, c.ext);
-  const dirGet = c => (c.cust ? ((D.custom[c.cust] || {}).dir || 'both') : (c.own ? (D.cdir[c.kids[0]] || 'both') : (D.dir[c.p] || 'both')));
-  function dirSet(c, v) { if (c.cust) { if (D.custom[c.cust]) D.custom[c.cust].dir = v; } else if (c.own) D.cdir[c.kids[0]] = v; else D.dir[c.p] = v; }
+  const dirGet = c => ((D.custom[c.cust] || {}).dir || 'both');
   const isDue = c => { const s = D.sched[c.key]; return !s || s.due <= Date.now(); };
   const cardVisible = c => { const vm = vmap(); return cardBoxes(c).every(id => vm.has(id)); };
-  function newCustom(p, kids, ext, dir) { const id = ++D.cseq; D.custom[id] = { id, p, kids: kids.slice(), ext: ext.slice(), dir: dir || 'both' }; return id; }
-  function extArr(c, mkNew) {
-    if (c.cust) { const cu = D.custom[c.cust]; if (!cu) return null; return cu.ext || (mkNew ? (cu.ext = []) : null); }
-    return D.ext[c.p] || (mkNew ? (D.ext[c.p] = []) : null);
-  }
-  function extTrim(c) {
-    if (c.cust) { const cu = D.custom[c.cust]; if (cu && cu.ext && !cu.ext.length) delete cu.ext; }
-    else if (D.ext[c.p] && !D.ext[c.p].length) delete D.ext[c.p];
+  function newCustom(p, kids, ext, dir) { const id = ++D.cseq, cu = { id, p, kids: kids.slice(), dir: dir || 'both' }; if (ext && ext.length) cu.ext = ext.slice(); D.custom[id] = cu; return id; }
+  const under = (am, gid, anc) => { let n = am.get(gid); n = n && n.parent; while (n) { if (n.id === anc) return true; n = n.parent; } return false; };
+  function sigOf() { let h = 17; roots().forEach(r => (function w(n, pid) { h = (h * 31 + n.id * 7 + pid) | 0; n.children.forEach((c, i) => { h = (h * 31 + i) | 0; w(c, n.id); }); })(r, 0)); return h; }
+
+  // undo for card changes (delete, extend, leave out, connector, tape, direction, added cards)
+  const snapU = () => JSON.stringify(getData(true));
+  function u() { ustack.push(snapU()); if (ustack.length > 60) ustack.shift(); }
+  function undoCard() {
+    if (!ustack.length) { stat('Nothing to undo.'); return; }
+    const s = JSON.parse(ustack.pop()); s.h = 1; setData(s); X.touch(); stat('Undid the last card change.');
   }
 
   /* ---------- modes ---------- */
@@ -1430,23 +1464,28 @@ body.cardview .cdim{opacity:.12!important}
   panelC.innerHTML = '<div class="head"><h1>Flashcards</h1><button class="pHide" title="Hide panel">‹</button></div>' +
     '<div class="row"><button id="pcStart" class="primary">Start cards</button><button id="pcRestore">Restore deleted</button></div>' +
     '<details class="sec"><summary>Card settings</summary>' +
-    '<label class="tg"><input type="checkbox" id="pcPairs"><span>One card per parent–child pair (off: one card per box with children)</span></label>' +
     '<label class="tg"><input type="checkbox" id="pcBlur"><span>Real blur outside the card (off: heavy dim, which is smoother)</span></label></details>' +
     '<input type="search" id="pcSearch" placeholder="Search cards…">' +
     '<select id="pcFilter"><option value="all">All cards</option><option value="due">Due</option><option value="new">New</option><option value="def">Define</option><option value="idn">Identify</option><option value="enum">Enumerate</option></select>' +
-    '<div id="pcCount" class="note"></div><div id="pcList"></div>';
+    '<div id="pcCount" class="note"></div><div id="pcList"><div id="pcSp"></div><div id="pcRows"></div></div>';
   document.body.insertBefore(panelB, host); document.body.insertBefore(panelC, host);
   const $c = id => panelC.querySelector('#' + id);
+  const toast = el('div'); toast.id = 'mmToast'; toast.hidden = true; host.appendChild(toast);
+  let toastT = 0;
+  function stat(m) {
+    const s = document.getElementById('status'); if (s) s.textContent = m;
+    toast.textContent = m; toast.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { toast.hidden = true; }, 3400);
+  }
   const tapeBtn = el('button', '', '🩹'); tapeBtn.id = 'tapeBtn'; tapeBtn.title = 'Tape edit';
   tbar.insertBefore(tapeBtn, menuBtn);
-  const bar = el('div'); bar.id = 'cardBar'; bar.hidden = true; bar.setAttribute('data-pui', '1'); host.appendChild(bar); noProp(bar);
+  const cbTop = el('div'); cbTop.id = 'cbTop'; cbTop.hidden = true; cbTop.setAttribute('data-pui', '1'); host.appendChild(cbTop); noProp(cbTop);
+  const cbBot = el('div'); cbBot.id = 'cbBot'; cbBot.hidden = true; cbBot.setAttribute('data-pui', '1'); host.appendChild(cbBot); noProp(cbBot);
   const menu = el('div'); menu.id = 'mmMenu'; menu.hidden = true; menu.setAttribute('data-pui', '1');
   menu.innerHTML = '<button data-md="A">A · Original</button><button data-md="B">B · Tape edit</button><button data-md="C">C · Flashcards</button><hr><button data-md="panel">Show / hide panel</button>';
   host.appendChild(menu); noProp(menu);
   const mini = el('div'); mini.id = 'cnBar'; mini.hidden = true; mini.setAttribute('data-pui', '1');
   mini.innerHTML = '<button data-k="conn"></button><button data-k="rst" title="Cover the whole box again">↺ Tape</button>';
   host.appendChild(mini); noProp(mini);
-  // connector button in the box tap bar (mode A and wherever the normal tap bar shows)
   const nbEl = document.getElementById('nodebar'), nbC = el('button', 'fx', '⛓');
   nbC.id = 'nbConn'; nbC.title = 'Connector: this box is never taped in any card';
   if (nbEl) nbEl.appendChild(nbC);
@@ -1484,7 +1523,7 @@ body.cardview .cdim{opacity:.12!important}
     ['a', 'b', 'c'].forEach(k => b.classList.toggle('mode-' + k, mode === k.toUpperCase()));
     tapeBtn.classList.toggle('on', tapeOn);
     menu.querySelectorAll('[data-md]').forEach(x => x.classList.toggle('on', x.dataset.md === mode));
-    refreshOverlay(); syncBar(); refreshSelBtns(); syncMini(); if (mode === 'C') renderList();
+    refreshOverlay(); syncBar(); refreshSelBtns(); syncMini(); renderList();
   }
   tapeBtn.onclick = toggleTape;
   menuBtn.onclick = () => { menu.hidden = !menu.hidden; };
@@ -1498,42 +1537,74 @@ body.cardview .cdim{opacity:.12!important}
   function togglePanel() {
     const p = mode === 'A' ? document.getElementById('panel') : (mode === 'B' ? panelB : panelC);
     if (isMobile()) p.classList.toggle('open'); else document.body.classList.toggle('collapsed');
+    setTimeout(() => { layout(); drawRows(); }, 260);
   }
   [panelB, panelC].forEach(p => p.querySelector('.pHide').onclick = togglePanel);
+
+  /* ---------- adaptive layout: recalculated on resize / rotation / keyboard only, never on pan or zoom ---------- */
+  const RES = { t: 0, b: 0 };
+  let HR = { w: 800, h: 600 }, lastK = -1;
+  function layout() {
+    const hr = host.getBoundingClientRect(), tb = tbar.getBoundingClientRect();
+    HR = { w: hr.width, h: hr.height };
+    cbTop.style.top = (Math.max(0, tb.bottom - hr.top) + 8) + 'px';
+    RES.t = 0; RES.b = 0;
+    if (sess) {
+      const a = cbTop.getBoundingClientRect(), b = cbBot.getBoundingClientRect();
+      RES.t = Math.max(0, a.bottom - hr.top) + 6;
+      RES.b = Math.max(0, hr.bottom - b.top) + 6;
+    }
+    P0.relayout(); placeMini();
+  }
+  const vv = window.visualViewport;
+  function kbSync() {
+    const k = vv ? Math.max(0, window.innerHeight - vv.height - vv.offsetTop) : 0, on = k > 80;
+    document.documentElement.style.setProperty('--kb', (on ? k : 0) + 'px');
+    document.body.classList.toggle('kbopen', on);
+  }
+  let rzT = 0;
+  function onResize(rezoom) {
+    clearTimeout(rzT);
+    rzT = setTimeout(() => { kbSync(); layout(); if (rezoom && sess) zoomCard(sess.cur, 0); drawRows(); }, 150);
+  }
+  window.addEventListener('resize', () => onResize(true));
+  window.addEventListener('orientationchange', () => onResize(true));
+  if (vv) vv.addEventListener('resize', () => onResize(false));
 
   /* ---------- connector boxes ---------- */
   function toggleConn(ids) {
     ids = ids.filter(Boolean);
     if (!ids.length) return;
+    u();
     const any = ids.some(id => !D.conn[id]);
     ids.forEach(id => { if (any) D.conn[id] = 1; else delete D.conn[id]; });
     stat(any ? 'Connector set: ' + ids.length + ' box(es) are never taped.' : 'Connector removed.');
     changed();
   }
+  let mbw = 160, mbh = 48;
   function syncMini() {
     mnode = (mode !== 'A' && msel != null) ? (vmap().get(msel) || null) : null;
     if (!mnode) { mini.hidden = true; return; }
     const cn = !!D.conn[msel], b = mini.querySelector('[data-k="conn"]');
     b.textContent = cn ? '⛓ Unset connector' : '⛓ Set connector'; b.classList.toggle('on', cn);
     mini.querySelector('[data-k="rst"]').hidden = !((mode === 'B' || tapeOn) && !cn && D.tape[msel]);
-    mini.hidden = false; placeMini();
+    mini.hidden = false; mbw = mini.offsetWidth || 160; mbh = mini.offsetHeight || 48; placeMini();
   }
   function placeMini() {
     if (!mnode || mini.hidden) return;
-    const r = host.getBoundingClientRect(), k = view.k, sx = mnode.x * k + view.x, sy = mnode.y * k + view.y, hh = mnode.h * k / 2;
-    const bw = mini.offsetWidth || 160, bh = mini.offsetHeight || 48;
-    let top = sy - hh - bh - 22; if (top < 4) top = sy + hh + 22;
-    mini.style.left = clamp(sx - bw / 2, 4, Math.max(4, r.width - bw - 4)) + 'px';
-    mini.style.top = clamp(top, 4, Math.max(4, r.height - bh - 4)) + 'px';
+    const k = view.k, sx = mnode.x * k + view.x, sy = mnode.y * k + view.y, hh = mnode.h * k / 2;
+    let top = sy - hh - mbh - 22; if (top < 4) top = sy + hh + 22;
+    mini.style.left = clamp(sx - mbw / 2, 4, Math.max(4, HR.w - mbw - 4)) + 'px';
+    mini.style.top = clamp(top, 4, Math.max(4, HR.h - mbh - 4 - RES.b)) + 'px';
   }
   mini.addEventListener('click', e => {
     const b = e.target.closest('button'); if (!b || msel == null) return;
     if (b.dataset.k === 'conn') toggleConn([msel]);
-    else { delete D.tape[msel]; X.touch(); refreshOverlay(); syncMini(); }
+    else { u(); delete D.tape[msel]; X.touch(); refreshOverlay(); syncMini(); }
   });
 
-  /* ---------- tape ---------- */
-  let gT = null, gM = null, gP = null, gH = null, tapeEls = new Map(), hEls = [], hNode = null, hd = null, lastDim = null;
+  /* ---------- overlay: tape, markers, buttons, handles (screen-sized parts only rescale on zoom) ---------- */
+  let gT = null, gM = null, gP = null, gH = null, tapeEls = new Map(), hEls = [], hNode = null, hd = null, lastDim = null, dimmed = false, SC = [];
   const tp = id => D.tape[id] || [0, 0, 1, 1];
   const tapedIds = c => (dispType(c) === 'idn' ? [c.p] : c.kids.concat(c.ext)).filter(id => !D.conn[id]);   // a connector is never taped
   function dispType(c) {
@@ -1542,6 +1613,12 @@ body.cardview .cdim{opacity:.12!important}
     if (pd === 'def') return c.type === 'idn' ? (c.kids.length > 1 ? 'enum' : 'def') : c.type;
     return c.type;
   }
+  function rescale() {
+    const s = 1 / view.k;
+    SC.forEach(o => o.g.setAttribute('transform', 'translate(' + o.x + ' ' + o.y + ') scale(' + s + ')'));
+    lastK = view.k;
+  }
+  const scaled = (parent, x, y) => { const g = sv('g'); parent.appendChild(g); SC.push({ g, x, y }); return g; };
   function setRect(e, n) {
     const t = tp(n.id);
     e.setAttribute('x', n.x - n.w / 2 + t[0] * n.w); e.setAttribute('y', n.y - n.h / 2 + t[1] * n.h);
@@ -1562,14 +1639,12 @@ body.cardview .cdim{opacity:.12!important}
     });
   }
   function drawMarks() {                                  // small chain badge on every connector box
-    const k = view.k;
     X.nodes().forEach(n => {
       if (!D.conn[n.id]) return;
-      const x = n.x + n.w / 2 - 3 / k, y = n.y + n.h / 2 - 3 / k, g = sv('g', { style: 'pointer-events:none' });
-      g.appendChild(sv('rect', { x: x - 22 / k, y: y - 12 / k, width: 22 / k, height: 14 / k, rx: 7 / k, fill: '#2A9D8F', stroke: '#fff', 'stroke-width': 1.5 / k }));
-      g.appendChild(sv('circle', { cx: x - 15 / k, cy: y - 5 / k, r: 3.4 / k, fill: 'none', stroke: '#fff', 'stroke-width': 1.6 / k }));
-      g.appendChild(sv('circle', { cx: x - 8 / k, cy: y - 5 / k, r: 3.4 / k, fill: 'none', stroke: '#fff', 'stroke-width': 1.6 / k }));
-      gM.appendChild(g);
+      const g = scaled(gM, n.x + n.w / 2 - 3 / view.k, n.y + n.h / 2 - 3 / view.k); g.style.pointerEvents = 'none';
+      g.appendChild(sv('rect', { x: -22, y: -12, width: 22, height: 14, rx: 7, fill: '#2A9D8F', stroke: '#fff', 'stroke-width': 1.5 }));
+      g.appendChild(sv('circle', { cx: -15, cy: -5, r: 3.4, fill: 'none', stroke: '#fff', 'stroke-width': 1.6 }));
+      g.appendChild(sv('circle', { cx: -8, cy: -5, r: 3.4, fill: 'none', stroke: '#fff', 'stroke-width': 1.6 }));
     });
   }
   function drawHandles() {
@@ -1583,7 +1658,7 @@ body.cardview .cdim{opacity:.12!important}
       e.addEventListener('pointerdown', ev => {
         ev.stopPropagation(); ev.preventDefault();
         try { e.setPointerCapture(ev.pointerId); } catch (_) { /* ignore */ }
-        hd = { side, n, s: tp(n.id).slice(), x: ev.clientX, y: ev.clientY, id: ev.pointerId };
+        hd = { side, n, s: tp(n.id).slice(), x: ev.clientX, y: ev.clientY, id: ev.pointerId, u: snapU() };
       });
       e.addEventListener('pointermove', ev => {
         if (!hd || ev.pointerId !== hd.id) return;
@@ -1598,7 +1673,11 @@ body.cardview .cdim{opacity:.12!important}
         const te = tapeEls.get(hd.n.id); if (te) setRect(te, hd.n);
         posHandles();
       });
-      const end = ev => { if (!hd || ev.pointerId !== hd.id) return; hd = null; X.touch(); syncMini(); };
+      const end = ev => {
+        if (!hd || ev.pointerId !== hd.id) return;
+        if (snapU() !== hd.u) { ustack.push(hd.u); if (ustack.length > 60) ustack.shift(); }
+        hd = null; X.touch(); syncMini(); syncBar();
+      };
       e.addEventListener('pointerup', end); e.addEventListener('pointercancel', end);
       gH.appendChild(e); hEls.push({ e, side });
     });
@@ -1608,7 +1687,7 @@ body.cardview .cdim{opacity:.12!important}
     if (!hNode) return;
     const n = hNode, t = tp(n.id), k = view.k;
     const x0 = n.x - n.w / 2 + t[0] * n.w, x1 = n.x - n.w / 2 + t[2] * n.w, y0 = n.y - n.h / 2 + t[1] * n.h, y1 = n.y - n.h / 2 + t[3] * n.h, cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
-    const L = 34 / k, T = 12 / k;
+    const L = 48 / k, T = 16 / k;
     hEls.forEach(({ e, side }) => {
       const hz = side === 'l' || side === 'r', w = hz ? T : L, h = hz ? L : T;
       const x = side === 'l' ? x0 : side === 'r' ? x1 : cx, y = side === 't' ? y0 : side === 'b' ? y1 : cy;
@@ -1617,134 +1696,134 @@ body.cardview .cdim{opacity:.12!important}
     });
   }
 
-  /* ---------- buttons on the card: grandchild range (+/−) and per-child (−/+) ---------- */
+  /* ---------- buttons on the card: + / − per box of the range, − / + per child ---------- */
   function drawPlus() {
-    if (!gP) return;
-    while (gP.firstChild) gP.removeChild(gP.firstChild);
-    plusBtns = []; plusK = view.k;
-    if (!sess) return;
-    const c = sess.cur, vm = vmap(), ext = new Set(c.ext), inc = new Set(c.kids.concat(c.ext));
-    // buttons are drawn at a fixed size and only their scale follows the zoom, so panning and zooming never rebuild them
+    if (!gP || !sess) return;
+    const c = sess.cur, vm = vmap(), inR = new Set(c.kids.concat(c.ext)), ext = new Set(c.ext);
     const btn = (n, right, txt, col, fn) => {
-      const cx = right ? n.x + n.w / 2 : n.x - n.w / 2, cy = n.y - n.h / 2, grp = sv('g', { 'class': 'tphd', style: 'cursor:pointer' });
-      grp.appendChild(sv('circle', { cx: 0, cy: 0, r: 13, fill: col, stroke: '#fff', 'stroke-width': 2 }));
+      const g = scaled(gP, right ? n.x + n.w / 2 : n.x - n.w / 2, n.y - n.h / 2);
+      g.setAttribute('class', 'tphd'); g.style.cursor = 'pointer';
+      g.appendChild(sv('circle', { cx: 0, cy: 0, r: 22, fill: 'rgba(0,0,0,0.001)' }));      // a 44 px touch target
+      g.appendChild(sv('circle', { cx: 0, cy: 0, r: 13, fill: col, stroke: '#fff', 'stroke-width': 2 }));
       const t = sv('text', { x: 0, y: 6, 'text-anchor': 'middle', 'font-size': 18, fill: '#fff', 'font-family': 'Helvetica,Arial,sans-serif', 'font-weight': 'bold' });
-      t.textContent = txt; t.style.pointerEvents = 'none'; grp.appendChild(t);
-      grp.addEventListener('pointerdown', e => e.stopPropagation());
-      grp.addEventListener('click', e => { e.stopPropagation(); fn(); });
-      gP.appendChild(grp); plusBtns.push({ g: grp, cx, cy });
+      t.textContent = txt; t.style.pointerEvents = 'none'; g.appendChild(t);
+      g.addEventListener('pointerdown', e => e.stopPropagation());
+      g.addEventListener('click', e => { e.stopPropagation(); fn(); });
     };
-    // every box already in the range (the children, then anything extended) offers a plus on each of its own children, to any depth
-    inc.forEach(id => {
+    inR.forEach(id => {
       const bn = vm.get(id); if (!bn) return;
-      bn.children.forEach(g => { const gn = vm.get(g.id); if (!gn || c.kids.indexOf(g.id) >= 0) return; const on = ext.has(g.id); btn(gn, true, on ? '−' : '+', on ? '#E63946' : '#2A9D8F', () => toggleExt(c, gn)); });
+      bn.children.forEach(ch => {                          // a plus appears only where the parent is already in the range
+        const cn = vm.get(ch.id); if (!cn) return;
+        if (!inR.has(ch.id)) btn(cn, true, '+', '#2A9D8F', () => addExt(c, [cn]));
+        else if (ext.has(ch.id)) btn(cn, true, '−', '#E63946', () => removeExt(c, cn));
+      });
     });
-    c.kids.forEach(kid => { const kn = vm.get(kid); if (kn && c.grp && c.kids.length > 1) btn(kn, false, '−', '#7B2CBF', () => leaveClick(c, [kid])); });
-    if (c.grp) {
-      const pn = vm.get(c.p);
-      if (pn) pn.children.forEach(ch => { if (c.kids.indexOf(ch.id) < 0) { const cn = vm.get(ch.id); if (cn) btn(cn, false, '+', '#7B2CBF', () => backClick(c, [ch.id])); } });
-    }
-    scalePlus();
+    if (c.kids.length > 1) c.kids.forEach(kid => { const kn = vm.get(kid); if (kn) btn(kn, false, '−', '#7B2CBF', () => leaveClick(c, [kid])); });
+    const pn = vm.get(c.p);
+    if (pn) pn.children.forEach(ch => { if (c.kids.indexOf(ch.id) < 0) { const cn = vm.get(ch.id); if (cn) btn(cn, false, '+', '#7B2CBF', () => backClick(c, [ch.id])); } });
   }
-  function scalePlus() { const k = view.k; plusBtns.forEach(b => b.g.setAttribute('transform', 'translate(' + b.cx + ' ' + b.cy + ') scale(' + 1 / k + ')')); }
-  async function toggleExt(c, g) {
-    const arr = extArr(c, false), i = arr ? arr.indexOf(g.id) : -1;
-    if (i >= 0) {                                          // minus: the boxes beyond it leave the range too
-      const gone = new Set([g.id]); (function w(m) { m.children.forEach(x => { gone.add(x.id); w(x); }); })(g);
-      const keep = arr.filter(id => !gone.has(id));
-      arr.length = 0; keep.forEach(id => arr.push(id));
-      extTrim(c); changed(); return;
-    }
-    await addExt(c, [g]);
-  }
-  async function addExt(c, gs) {
-    const dc = [];
-    gs.forEach(g => cards().forEach(x => { if (g.parent && x.p === g.parent.id && x.kids.indexOf(g.id) >= 0 && dc.indexOf(x) < 0) dc.push(x); }));
-    if (dc.length) {
-      const r = await ask('Extend the range to ' + gs.length + ' box(es)? They already have ' + dc.length + ' default card(s). Delete them?', ['Delete them', 'Keep them', 'Cancel']);
-      if (r < 0 || r === 2) return;
-      if (r === 0) dc.forEach(x => { D.del[x.key] = 1; });
-    }
-    const arr = extArr(c, true);
-    if (!arr) return;
-    gs.forEach(g => { if (arr.indexOf(g.id) < 0) arr.push(g.id); });
+  function removeExt(c, g) {                               // removes the box and every box beyond it
+    const cu = D.custom[c.cust]; if (!cu || !cu.ext) return;
+    u();
+    cu.ext = cu.ext.filter(id => id !== g.id && !under(amap(), id, g.id));
+    if (!cu.ext.length) delete cu.ext;
     changed();
   }
-  // leave children out of a card: they get their own single-child card (an Enumerate card with one child left becomes Define)
-  function leaveOut(c, ids, dv) {
-    ids = ids.filter(id => c.kids.indexOf(id) >= 0);
-    if (!ids.length || ids.length >= c.kids.length) return false;
-    if (c.cust) {
-      const cu = D.custom[c.cust]; if (!cu) return false;
-      const am = amap();
-      cu.kids = cu.kids.filter(k => ids.indexOf(k) < 0);
-      ids.forEach(id => {
-        const kn = am.get(id), dsc = new Set();
-        if (kn) (function w(m) { m.children.forEach(x => { dsc.add(x.id); w(x); }); })(kn);
-        const mine = (cu.ext || []).filter(g => dsc.has(g));
-        cu.ext = (cu.ext || []).filter(g => mine.indexOf(g) < 0);
-        newCustom(c.p, [id], mine, dv || 'both');
-      });
-      if (cu.ext && !cu.ext.length) delete cu.ext;
-    } else {
-      const a = D.exc[c.p] || (D.exc[c.p] = []);
-      ids.forEach(id => { if (a.indexOf(id) < 0) a.push(id); D.cdir[id] = dv || 'both'; delete D.del['def:' + c.p + ':' + id]; delete D.del['idn:' + c.p + ':' + id]; });
+  async function addExt(c, gs) {                           // one question for the whole group
+    const cu = D.custom[c.cust]; if (!cu) return;
+    const inR = new Set(c.kids.concat(c.ext)), ok = [];
+    gs.slice().sort((a, b) => a.depth - b.depth).forEach(g => { if (g.parent && inR.has(g.parent.id) && !inR.has(g.id)) { inR.add(g.id); ok.push(g); } });
+    if (!ok.length) return;
+    const ids = new Set(ok.map(g => g.id)), dc = [];
+    cards().forEach(x => { if (x.cust !== c.cust && ok.some(g => g.parent && x.p === g.parent.id && x.kids.indexOf(g.id) >= 0) && dc.indexOf(x) < 0) dc.push(x); });
+    let del = false;
+    if (dc.length) {
+      const r = await ask('Extend the range to ' + ids.size + ' box(es)? They already have ' + dc.length + ' card(s). Delete them?', ['Delete them', 'Keep them', 'Cancel']);
+      if (r < 0 || r === 2) return;
+      del = r === 0;
     }
+    u();
+    if (del) dc.forEach(x => { D.del[x.key] = 1; });
+    cu.ext = (cu.ext || []).concat(ok.map(g => g.id));
+    changed();
+  }
+  // leave children out of a card: each gets its own single-child card (an Enumerate card with one child left becomes Define)
+  function leaveOut(c, ids, dv) {
+    const cu = D.custom[c.cust]; ids = ids.filter(id => c.kids.indexOf(id) >= 0);
+    if (!cu || !ids.length || ids.length >= c.kids.length) return false;
+    const am = amap(); u();
+    cu.kids = c.kids.filter(k => ids.indexOf(k) < 0);
+    ids.forEach(id => {
+      const mine = (cu.ext || []).filter(g => under(am, g, id));
+      cu.ext = (cu.ext || []).filter(g => mine.indexOf(g) < 0);
+      newCustom(c.p, [id], mine, dv || 'both');
+    });
+    if (cu.ext && !cu.ext.length) delete cu.ext;
     return true;
   }
-  // bring children back into a card; asks what to do with the single-child cards they already have
   async function bringBack(c, ids) {
-    ids = ids.filter(id => c.kids.indexOf(id) < 0);
-    if (!ids.length) return false;
-    const dc = [];
-    cards().forEach(x => { if (x.p === c.p && x.kids.length === 1 && ids.indexOf(x.kids[0]) >= 0 && x.key !== c.key) dc.push(x); });
-    let keep = false;
+    const cu = D.custom[c.cust]; ids = ids.filter(id => c.kids.indexOf(id) < 0);
+    if (!cu || !ids.length) return false;
+    const dc = cards().filter(x => x.p === c.p && x.kids.length === 1 && ids.indexOf(x.kids[0]) >= 0 && x.cust !== c.cust);
+    let del = false;
     if (dc.length) {
       const r = await ask('Add ' + ids.length + ' box(es) back to this card? They already have ' + dc.length + ' single-child card(s). Delete them?', ['Delete them', 'Keep them', 'Cancel']);
       if (r < 0 || r === 2) return false;
-      if (r === 0) dc.forEach(x => { D.del[x.key] = 1; }); else keep = true;
+      del = r === 0;
     }
-    if (keep) ids.forEach(id => {                          // generated single cards would vanish: turn them into added cards
-      const own = dc.filter(x => x.own && x.kids[0] === id);
-      if (!own.length) return;
-      const hasD = own.some(x => x.type !== 'idn'), hasI = own.some(x => x.type === 'idn');
-      newCustom(c.p, [id], own[0].ext, hasD && hasI ? 'both' : (hasD ? 'def' : 'idn'));
-    });
-    if (c.cust) { const cu = D.custom[c.cust]; if (!cu) return false; ids.forEach(id => { if (cu.kids.indexOf(id) < 0) cu.kids.push(id); }); }
-    else { const a = (D.exc[c.p] || []).filter(id => ids.indexOf(id) < 0); if (a.length) D.exc[c.p] = a; else delete D.exc[c.p]; }
+    u();
+    if (del) dc.forEach(x => { D.del[x.key] = 1; });
+    const pn = amap().get(c.p), set = new Set(c.kids.concat(ids));
+    cu.kids = pn.children.filter(k => set.has(k.id)).map(k => k.id);
     return true;
   }
   function leaveClick(c, ids) { if (leaveOut(c, ids)) changed(); else stat('An Enumerate card keeps at least one child.'); }
   async function backClick(c, ids) { if (await bringBack(c, ids)) changed(); }
 
-  /* ---------- overlay: dim outside the card, tape, markers, buttons, handles ---------- */
+  /* ---------- dim outside the card ---------- */
   function cardRect(c) {
     const vm = vmap(); let r = null;
     cardBoxes(c).forEach(id => { const n = vm.get(id); if (!n) return; const q = { x0: n.x - n.w / 2 - 40, y0: n.y - n.h / 2 - 40, x1: n.x + n.w / 2 + 40, y1: n.y + n.h / 2 + 40 }; r = r ? { x0: Math.min(r.x0, q.x0), y0: Math.min(r.y0, q.y0), x1: Math.max(r.x1, q.x1), y1: Math.max(r.y1, q.y1) } : q; });
     return r;
   }
   function applyDim() {
-    const ne = X.nodeEls(), ee = X.edgeEls(), set = sess ? new Set(cardBoxes(sess.cur)) : null, vm = vmap(), bl = D.cfg.blur && ne.size <= 140;
-    ne.forEach((e, id) => { const d = !!set && !set.has(id); e.classList.toggle('cdim', d); e.classList.toggle('cblur', d && bl); });
-    ee.forEach((e, id) => { const n = vm.get(id), d = !!set && !(n && n.parent && set.has(id) && set.has(n.parent.id)); e.classList.toggle('cdim', d); e.classList.toggle('cblur', d && bl); });
-    document.body.classList.toggle('cardview', !!sess);
-    const r = sess ? cardRect(sess.cur) : null, key = r ? JSON.stringify(r) : '';
+    if (!sess) {                                           // nothing to do (a render already made fresh, undimmed elements)
+      if (dimmed) { dimmed = false; document.body.classList.remove('cardview'); if (lastDim !== null) { lastDim = null; P0.setDim(null); } }
+      return;
+    }
+    dimmed = true;
+    const ne = X.nodeEls(), ee = X.edgeEls(), set = new Set(cardBoxes(sess.cur)), vm = vmap(), bl = D.cfg.blur && ne.size <= 140;
+    ne.forEach((e, id) => { const d = !set.has(id); e.classList.toggle('cdim', d); e.classList.toggle('cblur', d && bl); });
+    ee.forEach((e, id) => { const n = vm.get(id), d = !(n && n.parent && set.has(id) && set.has(n.parent.id)); e.classList.toggle('cdim', d); e.classList.toggle('cblur', d && bl); });
+    document.body.classList.add('cardview');
+    const r = cardRect(sess.cur), key = r ? JSON.stringify(r) : '';
     if (key !== lastDim) {                                 // ink outside the card is dimmed too
       lastDim = key;
       P0.setDim(r ? (s => { const b = P0.bbox(s); return (b.x1 < r.x0 || b.x0 > r.x1 || b.y1 < r.y0 || b.y0 > r.y1) ? 0.18 : 1; }) : null);
     }
   }
-  let marksK = 0, plusBtns = [], plusK = 0;
   function build() {
     const w = X.world(); if (!w) return;
+    SC = [];
     gT = sv('g', { 'class': 'mmov' }); gM = sv('g', { 'class': 'mmov' }); gP = sv('g', { 'class': 'mmov' }); gH = sv('g', { 'class': 'mmov' });
     w.appendChild(gT); w.appendChild(gM); w.appendChild(gP); w.appendChild(gH);
-    marksK = view.k; drawTape(); drawMarks(); drawPlus(); drawHandles(); applyDim();
+    drawTape(); drawMarks(); drawPlus(); drawHandles(); rescale(); applyDim();
   }
   function refreshOverlay() { [gT, gM, gP, gH].forEach(g => { if (g && g.parentNode) g.parentNode.removeChild(g); }); build(); }
   let lt = 0;
-  function onRender() { cardsCache = null; build(); syncMini(); syncConnBtn(); clearTimeout(lt); lt = setTimeout(() => { if (mode === 'C') renderList(); }, 300); }
-  function onView() { posHandles(); placeMini(); if (sess && plusK !== view.k) { plusK = view.k; scalePlus(); } if (gM && gM.firstChild && marksK !== view.k) { marksK = view.k; while (gM.firstChild) gM.removeChild(gM.firstChild); drawMarks(); } }
+  function schedList() { clearTimeout(lt); lt = setTimeout(() => idle(() => { if (mode === 'C') renderList(); }), 250); }
+  // called after every render (not on pan or zoom). Card data is only rebuilt when the structure really changed.
+  function onRender() {
+    const s = sigOf();
+    if (s !== sig) { sig = s; inval(); if (sess) reconcile(); }
+    listDirty = true;
+    build(); syncMini(); syncConnBtn(); schedList();
+  }
+  // pan / zoom: only the camera moves. On a zoom change the screen-sized buttons are re-scaled (a transform per button).
+  function onView() {
+    if (view.k !== lastK) { rescale(); posHandles(); }
+    placeMini();
+  }
 
   /* ---------- tap routing ---------- */
   function lockTap(n) {
@@ -1763,6 +1842,7 @@ body.cardview .cdim{opacity:.12!important}
   let raf = 0;
   function animTo(t, ms) {
     cancelAnimationFrame(raf);
+    if (!ms) { view.k = t.k; view.x = t.x; view.y = t.y; X.applyView(); return; }
     const a = { x: view.x, y: view.y, k: view.k }, t0 = performance.now();
     const step = now => {
       let p = Math.min(1, (now - t0) / ms); p = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
@@ -1772,11 +1852,12 @@ body.cardview .cdim{opacity:.12!important}
     };
     raf = requestAnimationFrame(step);
   }
-  function zoomCard(c) {
+  // fits every box of the range in the space between the two bars
+  function zoomCard(c, ms) {
     const r = cardRect(c); if (!r) return;
-    const b = host.getBoundingClientRect(), W = r.x1 - r.x0, H = r.y1 - r.y0, availH = Math.max(120, b.height - 100);
-    const k = clamp(Math.min(b.width / W, availH / H), 0.01, 1.6);
-    animTo({ k, x: b.width / 2 - (r.x0 + W / 2) * k, y: availH / 2 - (r.y0 + H / 2) * k + 10 }, 260);
+    const W = r.x1 - r.x0, H = r.y1 - r.y0, availH = Math.max(120, HR.h - RES.t - RES.b), availW = HR.w;
+    const k = clamp(Math.min(availW / W, availH / H), 0.01, 1.6);
+    animTo({ k, x: availW / 2 - (r.x0 + W / 2) * k, y: RES.t + availH / 2 - (r.y0 + H / 2) * k }, ms === undefined ? 260 : ms);
   }
 
   /* ---------- study / review sessions ---------- */
@@ -1786,26 +1867,27 @@ body.cardview .cdim{opacity:.12!important}
     if (mode !== 'C') setMode('C');
     if (!saved) saved = { x: view.x, y: view.y, k: view.k };
     let i = ok.findIndex(c => c.key === key); if (i < 0) i = 0;
-    sess = { kind, list: ok, i, cur: ok[i], revealed: false, pdir: 'both' };
+    sess = { kind, list: ok, i, cur: ok[i], revealed: false, pdir: 'both', rs: [] };
     msel = null;
     showCard();
   }
   function showCard(noZoom) {
     const c = sess.list[sess.i]; sess.cur = c; sess.pdir = dirGet(c);
-    if (!noZoom) { sess.revealed = false; zoomCard(c); }
-    refreshOverlay(); syncBar(); refreshSelBtns(); syncMini(); renderList();
+    if (!noZoom) sess.revealed = false;
+    refreshOverlay(); syncBar();                           // the bars are measured first, so the zoom leaves room for them
+    if (!noZoom) zoomCard(c);
+    refreshSelBtns(); syncMini(); schedList();
   }
   function endSession(skip) {
     if (!sess) return;
     sess = null; const s = saved; saved = null;
     if (!skip && s) animTo(s, 260);                        // back to exactly where it was
-    bar.hidden = true; refreshOverlay(); refreshSelBtns(); syncMini(); renderList();
+    refreshOverlay(); syncBar(); refreshSelBtns(); syncMini(); renderList();
   }
   function reconcile() {
     if (!sess) return;
     const all = cards(), byKey = new Map(all.map(c => [c.key, c])), cur0 = sess.cur;
-    // a card whose key changed (Enumerate that dropped to one child becomes Define) is followed to its new key
-    const find = c => byKey.get(c.key) || all.find(x => x.p === c.p && !!x.grp === !!c.grp && !!x.own === !!c.own && x.cust === c.cust && (x.type === 'idn') === (c.type === 'idn') && (!c.own || x.kids[0] === c.kids[0]));
+    const find = c => byKey.get(c.key) || (D.del[c.key] ? null : all.find(x => x.cust === c.cust));
     const seen = new Set(), nl = [];
     sess.list.forEach(c => { const f = find(c); if (f && !seen.has(f.key)) { seen.add(f.key); nl.push(f); } });
     sess.list = nl;
@@ -1814,81 +1896,126 @@ body.cardview .cdim{opacity:.12!important}
     if (i < 0) { sess.i = Math.min(sess.i, nl.length - 1); showCard(); return; }
     sess.i = i; sess.cur = nl[i];
   }
+  const fmtIv = d => (d < 30 ? Math.round(d) + 'd' : d < 365 ? (Math.round(d / 30 * 10) / 10) + 'mo' : (Math.round(d / 365 * 10) / 10) + 'y');
+  const goodDays = c => { const s = D.sched[c.key]; return s && s.reps ? Math.max(1, Math.round(s.ivl * 2.5)) : 1; };
   function rate(good) {
-    const c = sess.cur, now = Date.now(), s = D.sched[c.key] || { ivl: 0, reps: 0, lapses: 0 };
+    const c = sess.cur, now = Date.now(), old = D.sched[c.key], s = old ? cp(old) : { ivl: 0, reps: 0, lapses: 0 };
+    sess.rs.push({ key: c.key, prev: old ? cp(old) : null, list: sess.list.slice(), i: sess.i }); if (sess.rs.length > 100) sess.rs.shift();
     sess.list.splice(sess.i, 1);
     if (good) { s.ivl = s.reps ? Math.max(1, Math.round(s.ivl * 2.5)) : 1; s.reps++; s.due = now + s.ivl * 864e5; }   // Got it: a longer gap every time
     else { s.lapses = (s.lapses || 0) + 1; s.reps = 0; s.ivl = 0; s.due = now + 6e4; sess.list.splice(Math.min(sess.list.length, sess.i + (c.type === 'enum' ? 1 : 3)), 0, c); }   // Understood: back soon
-    D.sched[c.key] = s; X.persist();
+    D.sched[c.key] = s; X.persist(); listDirty = true;
     if (!sess.list.length) { stat('Review finished.'); endSession(); return; }
     if (sess.i >= sess.list.length) sess.i = 0;
     showCard();
   }
-  function syncBar() {
-    if (!sess) { bar.hidden = true; return; }
-    bar.hidden = false;
-    const c = sess.cur, t = dispType(c), pn = amap().get(c.p), n = sess.list.length, rv = sess.kind === 'review', rev = sess.revealed;
-    let h = '<div class="cbt"><b style="color:' + TC[t] + '">' + TL[t] + '</b> · ' + esc(short(pn ? pn.text : '', 40)) + ' · ' + (rv ? n + ' left' : (sess.i + 1) + '/' + n) + '</div><div class="cbr">';
-    if (!rv) h += '<button data-a="prev">‹ Prev</button><button data-a="rev">' + (rev ? 'Hide' : 'Show') + '</button><button data-a="next">Skip ›</button>';
-    else if (!rev) h += '<button class="primary" data-a="rev">Show answer</button>';
-    else h += '<button data-a="again">Understood</button><button class="primary" data-a="good">Got it</button>';
-    h += '</div><div class="cbr"><select id="cbDir">' + [['both', 'Both ways'], ['def', 'Define only'], ['idn', 'Identify only']].map(o => '<option value="' + o[0] + '"' + (o[0] === sess.pdir ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select><button data-a="save">Save</button><button data-a="close">✕</button></div>';
-    bar.innerHTML = h;
+  function undoRate() {
+    const r = sess && sess.rs.pop(); if (!r) return;
+    if (r.prev) D.sched[r.key] = r.prev; else delete D.sched[r.key];   // the schedule of that card is restored
+    sess.list = r.list; sess.i = r.i; X.persist(); listDirty = true;
+    reconcile(); if (sess) showCard();
   }
-  bar.addEventListener('click', e => {
-    const b = e.target.closest('button'); if (!b || !sess) return;
+
+  /* ---------- the two bars ---------- */
+  function syncBar() {
+    if (!sess) { cbTop.hidden = true; cbBot.hidden = true; layout(); return; }
+    cbTop.hidden = false; cbBot.hidden = false;
+    const c = sess.cur, t = dispType(c), pn = amap().get(c.p), n = sess.list.length, rv = sess.kind === 'review', rev = sess.revealed;
+    cbTop.innerHTML = '<div class="cnt"><b style="color:' + TC[t] + '">' + TL[t] + '</b> · ' + esc(short(pn ? pn.text : '', 30)) + ' · ' + (rv ? n + ' left' : (sess.i + 1) + '/' + n) + '</div>' +
+      '<select id="cbDir" title="Direction">' + [['both', 'Both ways'], ['def', 'Define only'], ['idn', 'Identify only']].map(o => '<option value="' + o[0] + '"' + (o[0] === sess.pdir ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>' +
+      '<button data-a="save" title="Make this direction the normal one">Save</button><button data-a="close" title="Close">✕</button>';
+    let h;
+    if (rv) {
+      if (!rev) h = '<div class="brow"><button class="primary wide" data-a="rev">Show answer</button></div>';
+      else h = '<div class="brow"><button class="bi" data-a="rundo" title="Undo"' + (sess.rs.length ? '' : ' disabled') + '>↶</button>' +
+        '<div class="rt"><button data-a="again">Understood</button><small>&lt;1m</small></div>' +
+        '<div class="rt"><button class="primary" data-a="good">Got it</button><small>' + fmtIv(goodDays(c)) + '</small></div></div>';
+    } else {
+      h = '<div class="brow"><button class="bi" data-a="prev" title="Back"' + (sess.i > 0 ? '' : ' disabled') + '>‹</button><button class="wide primary" data-a="rev">' + (rev ? 'Hide answer' : 'Show answer') + '</button><button class="bi" data-a="next" title="Next">›</button></div>' +
+        '<div class="brow"><button class="wide" data-a="del">🗑 Delete card</button><button class="wide" data-a="undo"' + (ustack.length ? '' : ' disabled') + '>↶ Undo</button></div>';
+    }
+    cbBot.innerHTML = h;
+    layout();
+  }
+  function barClick(e) {
+    const b = e.target.closest('button'); if (!b || !sess || b.disabled) return;
     const a = b.dataset.a;
     if (a === 'rev') { sess.revealed = sess.kind === 'review' ? true : !sess.revealed; refreshOverlay(); syncBar(); }
     else if (a === 'prev') { if (sess.i > 0) { sess.i--; showCard(); } }
     else if (a === 'next') { if (sess.i < sess.list.length - 1) { sess.i++; showCard(); } else { stat('That was the last card.'); endSession(); } }
     else if (a === 'again') rate(false);
     else if (a === 'good') rate(true);
-    else if (a === 'save') { dirSet(sess.cur, sess.pdir); changed(); stat('Saved this direction for all future reviews of the card.'); }
+    else if (a === 'rundo') undoRate();
+    else if (a === 'undo') undoCard();
+    else if (a === 'del') { u(); D.del[sess.cur.key] = 1; stat('Card deleted. Undo brings it back.'); changed(); }
+    else if (a === 'save') { const cu = D.custom[sess.cur.cust]; if (cu) { u(); cu.dir = sess.pdir; changed(); stat('Saved this direction for all future reviews of the card.'); } }
     else if (a === 'close') endSession();
-  });
-  bar.addEventListener('change', e => { if (e.target.id === 'cbDir' && sess) { sess.pdir = e.target.value; refreshOverlay(); syncBar(); } });
+  }
+  cbTop.addEventListener('click', barClick); cbBot.addEventListener('click', barClick);
+  cbTop.addEventListener('change', e => { if (e.target.id === 'cbDir' && sess) { sess.pdir = e.target.value; refreshOverlay(); syncBar(); } });
 
   function changed() {
-    cardsCache = null; X.touch(); reconcile(); refreshPanel(); refreshOverlay(); syncBar(); refreshSelBtns(); syncMini(); syncConnBtn(); renderList();
+    inval(); X.touch(); reconcile(); refreshPanel(); refreshOverlay(); syncBar(); refreshSelBtns(); syncMini(); syncConnBtn(); renderList();
   }
 
-  /* ---------- card browser (side panel of mode C) ---------- */
+  /* ---------- card browser (side panel of mode C): only the visible rows are drawn ---------- */
+  let flist = [], lam = new Map(), cDue = 0, cAll = 0;
+  const lbox = $c('pcList'), lsp = $c('pcSp'), lrows = $c('pcRows');
   function dueText(c) { const s = D.sched[c.key]; if (!s) return 'New'; if (s.due <= Date.now()) return 'Due now'; return 'Due ' + new Date(s.due).toLocaleDateString(); }
-  function filtered() {
-    const q = $c('pcSearch').value.trim().toLowerCase(), f = $c('pcFilter').value, am = amap(), nm = id => (am.get(id) ? am.get(id).text : '');
-    return cards().filter(c => {
-      if (f === 'due' && !isDue(c)) return false;
+  function computeList() {
+    const q = $c('pcSearch').value.trim().toLowerCase(), f = $c('pcFilter').value, am = amap(), all = cards();
+    lam = am; cAll = all.length; cDue = 0;
+    const nm = id => (am.get(id) ? am.get(id).text : '');
+    flist = all.filter(c => {
+      const due = isDue(c); if (due) cDue++;
+      if (f === 'due' && !due) return false;
       if (f === 'new' && D.sched[c.key]) return false;
       if ((f === 'def' || f === 'idn' || f === 'enum') && c.type !== f) return false;
       if (!q) return true;
       return (TL[c.type] + ' ' + nm(c.p) + ' ' + c.kids.map(nm).join(' ')).toLowerCase().indexOf(q) >= 0;
     });
+    listDirty = false;
   }
   function renderList() {
     if (mode !== 'C') return;
-    const box = $c('pcList'), list = filtered(), am = amap(), nm = id => (am.get(id) ? am.get(id).text : '?');
-    const all = cards(), due = all.filter(isDue).length;
-    $c('pcCount').textContent = all.length + ' cards · ' + due + ' due/new' + (list.length !== all.length ? ' · ' + list.length + ' shown' : '') + (list.length > 300 ? ' (first 300)' : '');
-    box.innerHTML = '';
-    list.slice(0, 300).forEach(c => {
-      const r = el('div', 'crow' + (sess && sess.cur && sess.cur.key === c.key ? ' cur' : ''));
-      const kids = c.kids.map(nm).map(t => short(t, 18)).join(', ');
-      r.innerHTML = '<div class="cm"><span class="cty" style="background:' + TC[c.type] + '">' + TL[c.type] + '</span><b>' + esc(short(nm(c.p), 26)) + '</b><small>' + (c.type === 'idn' ? esc(kids) + ' → ' + esc(short(nm(c.p), 18)) : '→ ' + esc(kids)) + ' · ' + dueText(c) + (c.cust ? ' · added' : '') + '</small></div><button data-r title="Reset schedule">↺</button><button data-d title="Delete card">🗑</button>';
-      r.onclick = e => {
-        if (e.target.closest('[data-r]')) { delete D.sched[c.key]; X.persist(); renderList(); return; }
-        if (e.target.closest('[data-d]')) { D.del[c.key] = 1; changed(); return; }
-        startSession('study', list, list.indexOf(c));      // tap a card: its boxes open on the canvas
-      };
-      box.appendChild(r);
-    });
+    if (listDirty) computeList();
+    $c('pcCount').textContent = cAll ? cAll + ' cards · ' + cDue + ' due/new' + (flist.length !== cAll ? ' · ' + flist.length + ' shown' : '') : NOCARDS;
+    drawRows();
   }
-  function refreshPanel() { $c('pcPairs').checked = !!D.cfg.pairs; $c('pcBlur').checked = !!D.cfg.blur; }
-  $c('pcSearch').addEventListener('input', renderList);
-  $c('pcFilter').addEventListener('change', renderList);
-  $c('pcPairs').addEventListener('change', e => { D.cfg.pairs = e.target.checked; changed(); });
+  function drawRows() {
+    if (mode !== 'C') return;
+    const n = flist.length;
+    lsp.style.height = n * RH + 'px';
+    if (!n) { lrows.style.transform = 'none'; lrows.innerHTML = cAll ? '<div class="note" style="padding:10px">No card matches.</div>' : '<div class="note" style="padding:10px">' + NOCARDS + '</div>'; return; }
+    const top = lbox.scrollTop, h = lbox.clientHeight || 300;
+    const a = Math.max(0, Math.floor(top / RH) - 4), b = Math.min(n, Math.ceil((top + h) / RH) + 4);
+    const nm = id => (lam.get(id) ? lam.get(id).text : '?'), cur = sess && sess.cur && sess.cur.key;
+    let html = '';
+    for (let i = a; i < b; i++) {
+      const c = flist[i], kids = c.kids.map(nm).map(t => short(t, 16)).join(', ');
+      html += '<div class="crow' + (c.key === cur ? ' cur' : '') + '" data-i="' + i + '"><div class="cm"><span class="cty" style="background:' + TC[c.type] + '">' + TL[c.type] + '</span><b>' + esc(short(nm(c.p), 24)) + '</b><small>' +
+        (c.type === 'idn' ? esc(kids) + ' → ' + esc(short(nm(c.p), 16)) : '→ ' + esc(kids)) + (c.ext.length ? ' +' + c.ext.length : '') + ' · ' + dueText(c) + '</small></div><button data-r title="Reset schedule">↺</button><button data-d title="Delete card">🗑</button></div>';
+    }
+    lrows.style.transform = 'translateY(' + a * RH + 'px)';
+    lrows.innerHTML = html;
+  }
+  let sT = 0;
+  lbox.addEventListener('scroll', () => { if (!sT) sT = requestAnimationFrame(() => { sT = 0; drawRows(); }); }, { passive: true });
+  lrows.addEventListener('click', e => {
+    const r = e.target.closest('.crow'); if (!r) return;
+    const c = flist[+r.dataset.i]; if (!c) return;
+    if (e.target.closest('[data-r]')) { delete D.sched[c.key]; X.persist(); listDirty = true; renderList(); return; }
+    if (e.target.closest('[data-d]')) { u(); D.del[c.key] = 1; changed(); return; }
+    startSession('study', flist, +r.dataset.i);            // tap a card: its boxes open on the canvas
+  });
+  function refreshPanel() { $c('pcBlur').checked = !!D.cfg.blur; }
+  let qT = 0;
+  $c('pcSearch').addEventListener('input', () => { clearTimeout(qT); qT = setTimeout(() => { listDirty = true; lbox.scrollTop = 0; renderList(); }, 140); });
+  $c('pcFilter').addEventListener('change', () => { listDirty = true; lbox.scrollTop = 0; renderList(); });
   $c('pcBlur').addEventListener('change', e => { D.cfg.blur = e.target.checked; X.touch(); refreshOverlay(); });
-  $c('pcRestore').onclick = () => { D.del = {}; changed(); stat('Deleted cards are back.'); };
+  $c('pcRestore').onclick = () => { u(); D.del = {}; changed(); stat('Deleted cards are back.'); };
   async function begin(list) {
+    if (!list.length) { stat(NOCARDS); return; }
     const k = await ask('Start cards (' + list.length + ')', ['Study', 'Review', 'Cancel']);
     if (k < 0 || k === 2) return;
     const l = k === 1 ? list.filter(isDue) : list;
@@ -1903,8 +2030,8 @@ body.cardview .cdim{opacity:.12!important}
     if (sb) return; sb = {};
     [['study', 'Study selection', 'Study'], ['del', 'Delete the card made of exactly these boxes', 'Delete card'], ['add', 'Add a card from these boxes', 'Add card'],
       ['conn', 'Connector boxes are never taped', 'Set connector'], ['inc', 'Add the selected children back to this card', 'Include'],
-      ['exc', 'Leave the selected children out of this card', 'Exclude'], ['ext', 'Extend the taped range to these boxes', 'Extend']].forEach(([k, t, l]) => {
-      const b = el('button', '', l); b.dataset.m = k; b.title = t; b.hidden = true; bar2.insertBefore(b, bar2.firstChild); sb[k] = b;
+      ['exc', 'Leave the selected children out of this card', 'Exclude'], ['ext', 'Extend the taped range to these boxes', 'Extend']].forEach(q => {
+      const b = el('button', '', q[2]); b.dataset.m = q[0]; b.title = q[1]; b.hidden = true; bar2.insertBefore(b, bar2.firstChild); sb[q[0]] = b;
     });
     bar2.addEventListener('click', selClick);
   }
@@ -1917,31 +2044,31 @@ body.cardview .cdim{opacity:.12!important}
     const ids = P0.selIds(), has = ids.length > 0, m = has ? matchCards(ids) : [];
     let inc = false, exc = false, ext = false;
     if (has && sess) {
-      const am = amap(), c = sess.cur, pn = am.get(c.p), inCard = new Set(c.kids);
-      if (c.grp && pn) { exc = c.kids.length > 1 && ids.some(id => inCard.has(id)); inc = ids.some(id => pn.children.some(k => k.id === id) && !inCard.has(id)); }
-      const rng = new Set(c.kids.concat(c.ext));
-      ext = ids.some(id => { const g = am.get(id); return g && g.parent && rng.has(g.parent.id) && !rng.has(g.id); });
+      const am = amap(), c = sess.cur, pn = am.get(c.p), inK = new Set(c.kids), inR = new Set(c.kids.concat(c.ext));
+      exc = c.kids.length > 1 && ids.some(id => inK.has(id));
+      inc = !!pn && ids.some(id => pn.children.some(k => k.id === id) && !inK.has(id));
+      ext = ids.some(id => { const g = am.get(id); return g && g.parent && inR.has(g.parent.id) && !inR.has(g.id); });
     }
     sb.study.hidden = !has; sb.del.hidden = !m.length; sb.add.hidden = !(ids.length >= 2 && !m.length);
     sb.conn.hidden = !has; sb.inc.hidden = !inc; sb.exc.hidden = !exc; sb.ext.hidden = !ext;
     sb.conn.textContent = has && ids.every(id => D.conn[id]) ? 'Unset connector' : 'Set connector';
   }
   function onSel(bar2) { ensureSelBtns(bar2); refreshSelBtns(); }
-  // Add card: the parent is the selected box closest to the centre, the other selected boxes under it are its children
+  // Add card: the parent is the selected box closest to the centre; the other selected boxes under it are its children / extended range
   async function addCard(ids) {
     const am = amap(), main = X.main(), bx = ids.map(id => am.get(id)).filter(Boolean);
     if (bx.length < 2) { stat('Select a parent and at least one of its children.'); return; }
     const dist = n => Math.hypot(n.x - main.x, n.y - main.y);
     bx.sort((a, b) => a.depth - b.depth || dist(a) - dist(b));
     const p = bx[0], kids = bx.filter(b => b.parent === p), rng = new Set(kids.map(k => k.id)), ext = [];
-    bx.forEach(b => { if (b !== p && b.parent && rng.has(b.parent.id) && !rng.has(b.id)) { ext.push(b); rng.add(b.id); } });   // chains of any depth, parents first
-    const used = new Set([p].concat(kids, ext)), left = bx.filter(b => !used.has(b));
+    bx.forEach(b => { if (b !== p && b.parent && rng.has(b.parent.id) && !rng.has(b.id)) { rng.add(b.id); ext.push(b); } });
+    const left = bx.filter(b => b !== p && !rng.has(b.id));
     if (!kids.length) { stat('None of the other selected boxes is a child of “' + short(p.text, 24) + '”.'); return; }
     let msg = 'Add a card: parent “' + short(p.text, 24) + '”, ' + kids.length + ' child(ren)' + (ext.length ? ' and ' + ext.length + ' extended box(es)' : '') + '.';
     if (left.length) msg += ' ' + left.length + ' selected box(es) are not under this parent and are left out.';
     const r = await ask(msg, ['Both ways', 'Define only', 'Identify only', 'Cancel']);
     if (r < 0 || r === 3) return;
-    newCustom(p.id, kids.map(k => k.id), ext.map(e => e.id), ['both', 'def', 'idn'][r]);
+    u(); newCustom(p.id, kids.map(k => k.id), ext.map(e => e.id), ['both', 'def', 'idn'][r]);
     changed();
     stat('Card added under “' + short(p.text, 24) + '”.' + (left.length ? ' ' + left.length + ' box(es) were not under this parent and were left out.' : ''));
   }
@@ -1949,38 +2076,35 @@ body.cardview .cdim{opacity:.12!important}
     const b = e.target.closest('button[data-m]'); if (!b) return;
     const k = b.dataset.m, ids = P0.selIds();
     if (k === 'study') {
-      const S = new Set(ids), list = seq().filter(c => cardBoxes(c).every(id => S.has(id)));
-      if (!list.length) { stat('No complete card inside the selection.'); return; }
+      const S = new Set(ids), list = cards().filter(c => cardBoxes(c).every(id => S.has(id)));
+      if (!list.length) { stat(cards().length ? 'There are no cards inside the selection.' : NOCARDS); return; }
       if (mode !== 'C') setMode('C');
       begin(list);
     } else if (k === 'del') {
       const m = matchCards(ids);
       const r = await ask('Delete ' + m.length + ' card(s) (' + m.map(c => TL[c.type]).join(', ') + ') made of exactly these boxes?', ['Delete', 'Cancel']);
-      if (r === 0) { m.forEach(c => { D.del[c.key] = 1; }); changed(); }
+      if (r === 0) { u(); m.forEach(c => { D.del[c.key] = 1; }); changed(); }
     } else if (k === 'add') await addCard(ids);
     else if (k === 'conn') toggleConn(ids);
     else if (k === 'ext' && sess) {
-      const am = amap(), rng = new Set(sess.cur.kids.concat(sess.cur.ext)), gs = [];
-      ids.map(id => am.get(id)).filter(Boolean).sort((a, b) => a.depth - b.depth).forEach(g => { if (g.parent && rng.has(g.parent.id) && !rng.has(g.id)) { gs.push(g); rng.add(g.id); } });
-      if (gs.length) await addExt(sess.cur, gs);
-    } else if ((k === 'inc' || k === 'exc') && sess && sess.cur.grp) {
+      const am = amap(); await addExt(sess.cur, ids.map(id => am.get(id)).filter(Boolean));
+    } else if ((k === 'inc' || k === 'exc') && sess) {
       const c = sess.cur, pn = amap().get(c.p), pk = new Set(pn.children.map(x => x.id)), ch = ids.filter(id => pk.has(id));
       if (!ch.length) return;
       if (k === 'inc') { if (await bringBack(c, ch)) changed(); }
       else {
-        const r = await ask('How should the left-out box(es) be studied?', ['Both ways', 'Define only', 'Identify only']);
-        if (r < 0) return;
-        if (leaveOut(c, ch.filter(id => c.kids.indexOf(id) >= 0), ['both', 'def', 'idn'][r])) changed();
-        else stat('An Enumerate card keeps at least one child.');
+        const r = await ask('How should the left-out box(es) be studied?', ['Both ways', 'Define only', 'Identify only', 'Cancel']);
+        if (r < 0 || r === 3) return;
+        if (leaveOut(c, ch, ['both', 'def', 'idn'][r])) changed(); else stat('An Enumerate card keeps at least one child.');
       }
     }
   }
 
   /* ---------- public hooks ---------- */
-  window.MMM = { get: getData, set: setData, lock: () => mode !== 'A', lockTap, onRender, onView, onSel, onSelect: n => syncConnBtn(n), mode: () => mode };
+  window.MMM = { get: getData, set: setData, lock: () => mode !== 'A', lockTap, onRender, onView, onSel, onSelect: n => syncConnBtn(n), bottom: () => RES.b, mode: () => mode };
   ready = true;
-  if (window.__cdPending !== undefined) { setData(window.__cdPending); window.__cdPending = undefined; }
-  refreshPanel(); syncUI();
+  if (window.__cdPending !== undefined) { const pend = window.__cdPending; window.__cdPending = undefined; setData(pend); }
+  sig = sigOf(); kbSync(); layout(); refreshPanel(); syncUI();
 })();
 """#
 
