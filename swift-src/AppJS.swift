@@ -311,8 +311,11 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
   function stretchMin(list, L) {
     L = Math.max(1, L || 1);
     for (const n of list) {
+            n.mR = null;
       if (!n.parent) { n.ux = 0; n.uy = 0; }
+      else if (massPlace(n, L)) { /* a rigid piece of a locked branch */ }
       else {
+
         const lm = lvMul(n), user = n.ov != null ? n.ov : lm;
         const m = user != null ? user : (n.au != null ? n.au : 1);
         const vx = n.dx * m, vy = n.dy * m, len = Math.hypot(vx, vy);
@@ -376,11 +379,16 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
       const A = hit.A, B = hit.B, a = A.n, b = B.n;
       const deeperA = a.depth > b.depth || (a.depth === b.depth && a.id > b.id);
       const order = deeperA ? [[a, B, b], [b, A, a]] : [[b, A, a], [a, B, b]];
-      const sib = !!a.parent && a.parent === b.parent;
+            const sib = !!a.parent && a.parent === b.parent;
+      const ra = massRootOf(a), rb = massRootOf(b);
+      if (ra && ra === rb) { skip.add(a.id < b.id ? a.id + ':' + b.id : b.id + ':' + a.id); continue; }   // inside one locked piece nothing can change
+
       let done = false;
       for (const [mv, Do, ot] of order) {
         if (!mv.parent || isAnc(mv, ot)) continue;                   // never move something together with the thing it collides with
-        if (nudgeNode(mv, Do, L, sib)) { done = true; break; }
+                const rm = massRootOf(mv);
+        if (rm ? (rm.parent && !isAnc(rm, ot) && nudgeMass(rm, mv, Do, L)) : nudgeNode(mv, Do, L, sib)) { done = true; break; }
+
       }
       if (!done) { skip.add(a.id < b.id ? a.id + ':' + b.id : b.id + ':' + a.id); continue; }
       stretchMin(list, L);
@@ -407,7 +415,9 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     }
     const arr = [];
     lists.forEach(({ list }) => { for (const n of list) arr.push(n); });
-    setNodes(arr);
+        setNodes(arr);
+    lazyFreeze();
+
   }
   // Locks keep lines where they are no matter how the layout is recomputed.
   //  · lkv = [dx, dy, angle, parentAngleAtLock]: the whole default vector. It stays attached to its parent, so when the
@@ -511,9 +521,11 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
       if (!src || !nodeSet.has(src)) return false;
       const vis = nodeSet, Alist = branchOf(src, vis);
       let changed = false;
-      Alist.forEach(n => { if (n.parent && (n.bf != null || n.au != null)) { n.bf = undefined; n.au = undefined; changed = true; } });
+            Alist.forEach(n => { if (n.parent && !lockedLine(n) && (n.bf != null || n.au != null)) { n.bf = undefined; n.au = undefined; changed = true; } });
+
       if (changed) restretch();
-      for (const n of Alist) if (n.parent && tighten(n, vis)) changed = true;
+            for (const n of Alist) if (n.parent && !lockedLine(n) && tighten(n, vis)) changed = true;
+
       if (changed) { restretch(); if (selected && selected.parent) syncLineUI(selected); touch(); }
       return changed;
     } catch (err) { console.error(err); return false; }
@@ -531,7 +543,9 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
         if (!k) continue;
         const axis = m.parent ? (abs.has(m) ? abs.get(m) : Math.atan2(m.y - m.parent.y, m.x - m.parent.x)) : -Math.PI / 2;
         const span = Math.min(3.4, 0.55 * k + 0.3);
-        kids.forEach((c, i) => {
+                kids.forEach((c, i) => {
+          if (lockedLine(c)) return;
+
           let ang;
           if (!m.parent) ang = -Math.PI / 2 + (i / k) * Math.PI * 2;     // a centre box: spread all the way round
           else if (k === 1) ang = axis;
@@ -598,7 +612,8 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
           if (len < 1e-6) { vx = r.x - rp.x; vy = r.y - rp.y; len = Math.hypot(vx, vy) || 1; }
           const ux = vx / len, uy = vy / len;
           const req = sepAlong({ w: n.parent.w * sc(n.parent), h: n.parent.h * sc(n.parent) }, { w: n.w * sc(n), h: n.h * sc(n) }, ux, uy, MINGAP);
-          if (len < req) { const f = req - len; dd.x += ux * f; dd.y += uy * f; x += ux * f; y += uy * f; }
+          if (len < req && !lockedLine(n)) { const f = req - len; dd.x += ux * f; dd.y += uy * f; x += ux * f; y += uy * f; }
+
           pos.set(n, { x, y });
         }
         const Ls = Alist.map(n => {
@@ -623,7 +638,8 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
         st.pairs.forEach(p => { conf.add(p[0].n); conf.add(p[1].n); });
         const ps = st.pos.get(src);
         bodies.forEach(n => {
-          if (!conf.has(n)) { out.set(n, { x: 0, y: 0 }); return; }
+          if (!conf.has(n) || lockedLine(n)) { out.set(n, { x: 0, y: 0 }); return; }
+
           const pn = st.pos.get(n);
           let fx, fy;
           if (n === src) { const pp = st.pos.get(n.parent); fx = pn.x - pp.x; fy = pn.y - pp.y; }     // source box: out along its own line
@@ -641,7 +657,8 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
           if (dist < 1e-6) { ux = 0; uy = -1; dist = 0; } else { ux /= dist; uy /= dist; }
           const pen = circ(a.n) + circ(b.n) - dist;                      // circle-to-circle penetration with tapered radii
           const s = Math.max(2, Math.min(10, pen * 0.15));
-          const wa = d.has(a.n) ? 1 / mass.get(a.n) : 0, wb = d.has(b.n) ? 1 / mass.get(b.n) : 0, tot = wa + wb;
+          const wa = d.has(a.n) && !lockedLine(a.n) ? 1 / mass.get(a.n) : 0, wb = d.has(b.n) && !lockedLine(b.n) ? 1 / mass.get(b.n) : 0, tot = wa + wb;
+
           if (!tot) return;
           if (wa) { const q = d.get(a.n); q.x += ux * s * wa / tot; q.y += uy * s * wa / tot; }
           if (wb) { const q = d.get(b.n); q.x -= ux * s * wb / tot; q.y -= uy * s * wb / tot; }
@@ -676,8 +693,9 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
           const ps = (n.parent && sh.get(n.parent)) || { x: 0, y: 0 };
           const q = stt.pos.get(n), ex = q.x + ps.x, ey = q.y + ps.y;
           let ax = 0, ay = 0;
-          const dd = d.get(n);
+                    const dd = lockedLine(n) ? null : d.get(n);
           if (dd) {
+
             const dx = ex - bar.x, dy = ey - bar.y, dist = Math.hypot(dx, dy), lim = bar.R - hd(n);
             if (dist > lim && dist > 1e-6) { const f = dist - lim; ax = -(dx / dist) * f; ay = -(dy / dist) * f; dd.x += ax; dd.y += ay; moved = true; }
           }
@@ -726,7 +744,8 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
       for (const n of Alist) {
         if (!n.parent) continue;
         const dd = d.get(n);
-        if (Math.hypot(dd.x, dd.y) < BLOOM.MOVE_MIN) continue;
+        if (lockedLine(n) || Math.hypot(dd.x, dd.y) < BLOOM.MOVE_MIN) continue;
+
         const pn = stF.pos.get(n), pp = stF.pos.get(n.parent);
         const vx = pn.x - pp.x, vy = pn.y - pp.y, len = Math.hypot(vx, vy);
         if (len < 1e-6) continue;
@@ -780,7 +799,8 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
   function reVector(src) {
     try {
       if (!src || !nodeSet.has(src)) return false;
-      const kids = src.children.filter(c => nodeSet.has(c)), k = kids.length;
+            const kids = src.children.filter(c => nodeSet.has(c) && !lockedLine(c)), k = kids.length;
+
       if (!k) return false;
       const T = Math.PI * 2, root = !src.parent;
       const out = root ? -Math.PI / 2 : Math.atan2(src.y - src.parent.y, src.x - src.parent.x);   // points away from the parent line
@@ -794,7 +814,8 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
       plan.forEach(q => {
         if (Math.abs(q.delta) > 0.005 || Math.abs((q.c.ba || 0) - q.ba) > 0.005) changed = true;
         q.c.ba = q.ba;
-        if (Math.abs(q.delta) > 1e-6) (function w(x) { x.children.forEach(e => { e.ba = normA((e.ba || 0) + q.delta); w(e); }); })(q.c);
+        if (Math.abs(q.delta) > 1e-6) (function w(x) { x.children.forEach(e => { if (!lockedLine(e)) e.ba = normA((e.ba || 0) + q.delta); w(e); });
+ })(q.c);
       });
       if (changed) { restretch(); if (selected && selected.parent) syncLineUI(selected); touch(); }
       return changed;
@@ -811,7 +832,176 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
   };
 
 
+    /* ---------- lock a branch: the box and everything beyond it moves and turns as one rigid piece ---------- */
+  // n.lk = locked · n.lkx/lky = the box's offset from the locked box (pixels, in the frame it had when locked)
+  // R.la0 = angle of the locked box's own line when it was locked. The mass turns by (line angle now − la0).
+  function lockedLine(n) { return !!(n.lk && n.parent && n.parent.lk); }
+  function allBelow(n) { const out = []; (function w(m) { out.push(m); m.children.forEach(w); })(n); return out; }
+  function rootOfMass(n) { let r = n; while (r.lk && r.parent && r.parent.lk) r = r.parent; return r; }
+  function massRootOf(n) { return n.lk ? rootOfMass(n) : null; }
+  function massRot(R) {
+    const p = R.parent; if (!p) return 0;
+    const ax = R.x - p.x, ay = R.y - p.y;
+    if (Math.hypot(ax, ay) < 1e-6) return 0;
+    const a = Math.atan2(ay, ax); if (R.la0 == null) R.la0 = a;
+    return a - R.la0;
+  }
+  function massPlace(n, L) {                            // used by the layout: places a member of a locked branch
+    const p = n.parent;
+    if (!(n.lk && p.lk)) return false;
+    const R = p.mR || p; n.mR = R;
+    if (n.lkx == null || n.lky == null) return false;
+    const rp = R.parent; let rot = 0;
+    if (rp) {
+      const ax = R.ux - rp.ux, ay = R.uy - rp.uy;
+      if (Math.hypot(ax, ay) > 1e-6) { const a = Math.atan2(ay, ax); if (R.la0 == null) R.la0 = a; rot = a - R.la0; }
+    }
+    const c = Math.cos(rot), s = Math.sin(rot);
+    n.ux = R.ux + (c * n.lkx - s * n.lky) / L;
+    n.uy = R.uy + (s * n.lkx + c * n.lky) / L;
+    return true;
+  }
+  // where a box is (or would be, if its branch is collapsed under a locked box)
+  function posOf(n) {
+    if (nodeSet.has(n)) return { x: n.x, y: n.y };
+    if (!(n.lk && n.lkx != null)) return null;
+    const R = rootOfMass(n); if (R === n || !nodeSet.has(R)) return null;
+    const r = massRot(R), c = Math.cos(r), s = Math.sin(r);
+    return { x: R.x + c * n.lkx - s * n.lky, y: R.y + s * n.lkx + c * n.lky };
+  }
+  function lazyFreeze() {                               // members that had no position yet (collapsed when locked) are fixed when first shown
+    for (const n of nodes) {
+      if (!lockedLine(n) || n.lkx != null) continue;
+      const R = rootOfMass(n);
+      if (R.parent && R.la0 == null) R.la0 = Math.atan2(R.y - R.parent.y, R.x - R.parent.x);
+      const r = massRot(R), c = Math.cos(-r), s = Math.sin(-r), dx = n.x - R.x, dy = n.y - R.y;
+      n.lkx = dx * c - dy * s; n.lky = dx * s + dy * c;
+    }
+  }
+  function lockBranch(R) {
+    const all = allBelow(R), pos = all.map(posOf), p = R.parent;
+    R.la0 = p ? Math.atan2(R.y - p.y, R.x - p.x) : 0;
+    all.forEach(m => { m.lk = 1; m.lkx = undefined; m.lky = undefined; });
+    all.forEach((m, i) => { if (m !== R && pos[i]) { m.lkx = pos[i].x - R.x; m.lky = pos[i].y - R.y; } });
+  }
+  // gives a line the exact vector it has on screen right now, so nothing moves when it becomes free
+  function bakeLock(c, vx, vy) {
+    const lm = lvMul(c), m = lm != null && lm > 0.05 ? lm : 1;
+    c.ov = lm != null && lm <= 0.05 ? 1 : undefined;
+    c.au = undefined; c.bf = undefined; c.ba = undefined; c.lkl = undefined; c.ta = 0;
+    c.lkv = [vx / m, vy / m, Math.atan2(vy, vx), c.parent.ang || 0];
+  }
+  function bakeAt(c, x, y) { const p = c.parent, L = Math.max(1, lenK); bakeLock(c, (x - p.x) / L, (y - p.y) / L); }
+  function clearLockOne(m) { m.lk = undefined; m.lkx = undefined; m.lky = undefined; }
+  function clearLock(n) { allBelow(n).forEach(clearLockOne); }
+  function unlockBranch(U) {                            // U and everything beyond it; the rest of the mass stays locked
+    const all = allBelow(U), jobs = all.filter(m => lockedLine(m) && nodeSet.has(m) && nodeSet.has(m.parent)).map(m => [m, m.x, m.y]);
+    jobs.forEach(q => bakeAt(q[0], q[1], q[2]));
+    all.forEach(clearLockOne);
+  }
+  function snapMass(n) {                                // positions of a locked branch relative to its box (used when it is snapped out)
+    const b = posOf(n) || { x: n.x, y: n.y };
+    return allBelow(n).filter(m => m !== n && m.lk).map(m => { const q = posOf(m); return [m, q ? q.x - b.x : null, q ? q.y - b.y : null]; });
+  }
+  function applyMass(n, list, a0) {
+    n.la0 = a0; n.lkx = undefined; n.lky = undefined;
+    list.forEach(q => { q[0].lkx = q[1] == null ? undefined : q[1]; q[0].lky = q[2] == null ? undefined : q[2]; });
+  }
+  // the collision guard pushes a whole locked branch as one piece (swing or slide its box along its own line)
+  function nudgeMass(Rm, cn, Do, L) {
+    const p = Rm.parent; if (!p) return false;
+    const dx = Rm.x - p.x, dy = Rm.y - p.y, r0 = Math.hypot(dx, dy);
+    if (r0 < 1e-6) return false;
+    const a0 = Math.atan2(dy, dx), cross = dx * (Do.y - p.y) - dy * (Do.x - p.x), s1 = cross > 0 ? -1 : 1, sb = seqBounds(Rm);
+    const ok = (r, a) => {
+      const nx = p.x + Math.cos(a) * r, ny = p.y + Math.sin(a) * r, d = a - a0, c = Math.cos(d), s = Math.sin(d);
+      const pos = m => ({ x: nx + (m.x - Rm.x) * c - (m.y - Rm.y) * s, y: ny + (m.x - Rm.x) * s + (m.y - Rm.y) * c });
+      const q = pos(cn), pp = cn === Rm ? p : pos(cn.parent);
+      return !lHit(mkL(cn, q.x, q.y, pp.x, pp.y, 1, 1), Do, MINGAP);
+    };
+    for (let k = 1; k <= 110; k++) { const r = r0 + 3 * k; if (ok(r, a0)) { Rm.fl = Math.max(Rm.fl || 0, r / L); return true; } }
+    for (const s of [s1, -s1]) for (let k = 1; k <= 110; k++) {
+      const a = a0 + s * 0.015 * k;
+      if (sb) { const kk = seqKey(p, a); if (kk <= sb[0] + 0.01 || kk >= sb[1] - 0.01) break; }
+      if (ok(r0, a)) { Rm.ta = (Rm.ta || 0) + s * 0.015 * k; return true; }
+    }
+    return false;
+  }
+
+  /* ---------- Lock / Unlock button in the box tap bar (the text is the only sign of the state) ---------- */
+  const nbLock = document.createElement('button');
+  nbLock.id = 'nbLock'; nbLock.className = 'fx'; nbLock.title = 'Lock this box and its branches: every distance and direction inside stays fixed';
+  nodebar.appendChild(nbLock);
+  function syncLockBtn() { nbLock.textContent = selected && selected.lk ? 'Unlock' : 'Lock'; }
+  nbLock.onclick = () => {
+    const n = selected; if (!n || !nodeSet.has(n) || dnode || mover) return;
+    if (n.lk) {
+      unlockBranch(n); layoutAll(); render(); buildLevelControls();
+      statusEl.textContent = 'Unlocked this box and everything beyond it. Nothing moved.';
+    } else {
+      lockBranch(n); render(); buildLevelControls();
+      statusEl.textContent = 'Locked this box and its branches. Its own line stays free.';
+    }
+    syncLockBtn(); touch();
+  };
+
+  /* ---------- pinch out: one new box between a parent and several of its children ---------- */
+  function pinchOut(ids) {
+    if (dnode || mover) return false;
+    if (editNode) commitEdit();
+    const sel = ids.map(byId).filter(Boolean), p = sel.length ? sel[0].parent : null;
+    if (sel.length < 2 || !p || sel.some(s => s.parent !== p)) { statusEl.textContent = 'Pinch out needs two or more boxes with the same parent.'; return false; }
+    if (sel.some(lockedLine)) { statusEl.textContent = 'Unlock those boxes first (they are inside a locked branch).'; return false; }
+    clearTimeout(draftT); pushHist();                   // the state before: cancelling or undoing comes back here
+    const order = p.children.filter(c => sel.indexOf(c) >= 0), first = order[0];
+    const mem = []; order.forEach(s => allBelow(s).forEach(m => mem.push(m)));
+    const pos = new Map(); mem.forEach(m => { const q = posOf(m); if (q) pos.set(m, q); });
+    freezeFor(p, new Set());                            // everything else keeps its lines
+    const N = { id: nextId++, text: 'New', type: p.group ? 'member' : 'label', parent: p, children: [], group: false, depth: p.depth + 1, isMember: !!p.group, cover: false, pn: true };
+    const at = p.children.indexOf(first);
+    p.children = p.children.filter(c => sel.indexOf(c) < 0);
+    p.children.splice(Math.min(at, p.children.length), 0, N);   // the new box takes the place of the first selected sibling
+    N.children = order.slice();
+    order.forEach(s => { s.parent = N; s.isMember = !!N.group; });
+    p.hideKids = false; setDepth(N, p.depth + 1);
+    layoutAll();                                        // measures the new box
+    let cx = 0, cy = 0, c = 0;
+    order.forEach(s => { const q = pos.get(s); if (q) { cx += q.x; cy += q.y; c++; } });
+    if (c) { cx /= c; cy /= c; } else { cx = N.x; cy = N.y; }
+    let ux = cx - p.x, uy = cy - p.y, d = Math.hypot(ux, uy);
+    if (d < 1) { ux = 0; uy = -1; d = 1; } else { ux /= d; uy /= d; }
+    const dist = Math.max(sepAlong(p, N, ux, uy, MINGAP * 2) + 4, d * 0.45);   // closer to the parent than to the siblings
+    bakeAt(N, p.x + ux * dist, p.y + uy * dist);
+    restretch();
+    // while the name is typed, the siblings and their branches are one locked piece, so nothing between them changes
+    N.la0 = Math.atan2(N.y - p.y, N.x - p.x);
+    [N].concat(mem).forEach(m => { m.lk = 1; m.lkx = undefined; m.lky = undefined; });
+    mem.forEach(m => { const q = pos.get(m); if (q) { m.lkx = q.x - N.x; m.lky = q.y - N.y; } });
+    restretch();
+    selected = null; render();
+    dirty = true; if (store) store.request();
+    statusEl.textContent = 'Name the new box. Leave it empty to cancel.';
+    startEdit(N, true);                                 // the keyboard opens right away
+    return true;
+  }
+  function finishPinch(n, v) {
+    if (!v) {                                           // no name: everything goes back as it was
+      const h = hist[hi];
+      if (h) { const sn = JSON.parse(h.j); sn.ink = h.ink; restore(sn); }
+      statusEl.textContent = 'Pinch out cancelled: the new box needs a name. Everything is back as it was.';
+      return;
+    }
+    const px = n.x, py = n.y;
+    n.text = v; n.fresh = false;
+    layoutAll();                                        // measures the real name
+    bakeAt(n, px, py); restretch();
+    unlockBranch(n);                                    // the temporary lock is released, nothing moves
+    layoutAll(); render(); select(n, false); touch();
+    statusEl.textContent = 'Pinched out: “' + short(v) + '” now sits between the parent and ' + n.children.length + ' boxes.';
+  }
+
   /* ---------- draw the graph into a <g> (used by screen AND pdf) ---------- */
+
   // the connector line(s) between a box and its parent; a gradient is drawn as short solid segments
   function edgeInto(n, grp) {
     const p = n.parent, a = borderPoint(p, n), b = borderPoint(n, p), col = TYPES[n.type].color;
@@ -1005,6 +1195,8 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
       typeSel.value = n.type; syncLineUI(n);
       nbDot.style.background = TYPES[n.type].color;
       if (window.MMM && window.MMM.onSelect) window.MMM.onSelect(n);
+      syncLockBtn();
+
       nbTape.textContent = n.cover ? '👁' : '🩹';
       if (animate) ripple(n);
     }
@@ -1036,7 +1228,8 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
       }
     }
     // the line knob lives at the far right (CSS); it only shows while a box with an incoming line is chosen
-    rpanel.hidden = !(selected && selected.parent && !dnode && !mover && !editNode && nodeSet.has(selected));
+    rpanel.hidden = !(selected && selected.parent && !dnode && !mover && !editNode && nodeSet.has(selected) && !lockedLine(selected));
+
     const f = uhTarget();
     if (f && nodeSet.has(f)) {
       unhide.hidden = false;
@@ -1105,7 +1298,8 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
       if (el) {
         const n = byId(+el.getAttribute('data-id')), p0 = rel(e);
         // hold on a connected box: move it freely (stays connected). hold on a box that is already floating: pick it up.
-        if (n && n !== main && !(window.MMM && window.MMM.lock())) holdT = setTimeout(() => (n.parent ? startFree(n, p0) : startDrag(n, p0)), 450);
+        if (n && n !== main && !(window.MMM && window.MMM.lock()) && !lockedLine(n)) holdT = setTimeout(
+() => (n.parent ? startFree(n, p0) : startDrag(n, p0)), 450);
       }
     } else if (ptrs.size === 2) {
       drag = null;
@@ -1181,6 +1375,8 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     const n = editNode; editNode = null;
     nodeEdit.hidden = true;
     const v = nodeEdit.value.replace(/\s+/g, ' ').trim();
+    if (n.pn) { n.pn = false; finishPinch(n, v); return; }
+
     if (!v) { if (n.fresh && n.parent) { n.parent.children = n.parent.children.filter(c => c !== n); selected = null; } }
     else n.text = v;
     n.fresh = false;
@@ -1336,7 +1532,17 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     const o = sib[j];
     if (!nodeSet.has(o)) return;
     const L = Math.max(1, lenK);
+        if (lockedLine(n) !== lockedLine(o)) { statusEl.textContent = 'Unlock the locked branch first: it only swaps with another locked branch.'; return; }
+    if (lockedLine(n)) {                                // inside a locked mass the two branches trade places as rigid pieces
+      if (n.lkx == null || o.lkx == null) return;
+      const ddx = o.lkx - n.lkx, ddy = o.lky - n.lky;
+      allBelow(n).forEach(m => { if (m.lk && m.lkx != null) { m.lkx += ddx; m.lky += ddy; } });
+      allBelow(o).forEach(m => { if (m.lk && m.lkx != null) { m.lkx -= ddx; m.lky -= ddy; } });
+      sib[i] = o; sib[j] = n;
+      layoutAll(); render(); touch(); return;
+    }
     const va = [(n.x - p.x) / L, (n.y - p.y) / L], vo = [(o.x - p.x) / L, (o.y - p.y) / L];
+
     lockAllLines(null);                                  // nothing else moves
     sib[i] = o; sib[j] = n;
     // the two boxes trade places: each takes the other's exact vector and keeps its own sub-branches (they turn with it)
@@ -1435,11 +1641,14 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
 
   // takes a box out of its parent (it becomes a floating box that remembers its source)
   function detach(n) {
-    const x = n.x, y = n.y, src = n.parent;
+    const x = n.x, y = n.y, src = n.parent, keep = n.lk ? snapMass(n) : null;
+
     freezeFor(src, subtreeSet(n));                      // the siblings keep their line length and flow back into the gap
     src.children = src.children.filter(c => c !== n);
     n.parent = null; n.isMember = false; n.fx = x; n.fy = y; n.src = src;
     n.ba = undefined; n.bf = undefined; n.ov = undefined; n.au = undefined; n.lkv = undefined; n.lkl = undefined;
+    if (keep) applyMass(n, keep, 0);                    // a snapped-out locked branch keeps its exact shape
+
   }
   // a floating box is lifted: it follows the finger, its sub-branches hide under the show button
   function liftBox(n, fp, keepGrab) {
@@ -1607,7 +1816,8 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     floats = floats.filter(f => f !== d);
     floats.forEach(f => { if (f.src === d) f.src = null; });
     m.text = m.text + '-' + d.text;
-    d.children = [];
+        d.children = []; kids.forEach(c => clearLock(c));
+
     kids.forEach(c => {                                // the dropped box's own sub-branches move over to the merged box
       c.parent = m; c.src = null; c.isMember = !!m.group;
       c.ov = undefined; c.au = undefined; c.bf = undefined; c.ba = undefined; c.lkv = undefined; c.lkl = undefined;
@@ -1637,12 +1847,16 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
       par.children.push(d);
       d.isMember = !!par.group; d.ov = undefined; d.au = undefined; d.bf = undefined; d.ba = undefined; d.lkv = undefined; d.lkl = undefined;
       d.hideKids = false; d.src = null;
+      if (d.lk && par.lk) clearLock(d);                 // dropped into another locked branch: it joins unlocked
+
       setDepth(d, par.depth + 1);
       haptic();
       layoutAll();
       placeNew(d, relAng);
 ;                                      // only the new box is placed; everything else stays exactly where it was
-      holdCam(d, sx0, sy0);                             // camera stays on the connected box until the canvas is touched
+      if (d.lk) { d.la0 = Math.atan2(d.y - par.y, d.x - par.x); restretch(); }   // a locked branch keeps its shape under its new parent
+      holdCam(d, sx0, sy0);
+                             // camera stays on the connected box until the canvas is touched
     } else { tether(d); layoutAll(); }                  // left floating: stays a fixed distance from its source
     render();
     select(d, true);
@@ -1698,7 +1912,9 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
   bindLock(lineLen);
   lineLen.addEventListener('input', () => {
     if (!editing || !editing.parent) return;
+        if (lockedLine(editing)) return;
     editing.ov = (+lineLen.value) / 100;
+
     lineReset.disabled = false;
     relayout(true, [editing]);
     lineVal.textContent = Math.round(trueMul(editing) * 100) + '%';   // shows what the line really is now
@@ -1866,7 +2082,9 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     if (n.ba != null) a.rotation = n.ba;
     if (n.lkv) a.lock = n.lkv;
     if (n.lkl != null) a.lockLength = n.lkl;
-    if (n.lv) a.levelSliders = n.lv;
+        if (n.lv) a.levelSliders = n.lv;
+    if (n.lk) { a.locked = 1; if (n.lkx != null && n.lky != null) a.lockRel = [r2(n.lkx), r2(n.lky)]; if (n.la0 != null) a.lockAngle = n.la0; }
+
     if (Object.keys(a).length) o.layout = a;
     if (shown) {
       o.geometry = { x: r2(n.x), y: r2(n.y), width: r2(n.w), height: r2(n.h) };
@@ -1905,7 +2123,8 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
         i: 0, t: String(x.text == null ? '' : x.text), y: TYPES[x.type] ? x.type : 'label',
         g: x.group ? 1 : 0, m: x.member ? 1 : 0, o: num(a.lengthSet), a: num(a.tidy), b: num(a.clearance), q: num(a.rotation),
         z: lock, u: num(a.lockLength), l: a.levelSliders && typeof a.levelSliders === 'object' ? Object.assign({}, a.levelSliders) : undefined,
-        c: x.covered ? 1 : 0, h: x.collapsed ? 1 : 0, k: []
+        c: x.covered ? 1 : 0, h: x.collapsed ? 1 : 0, j: a.locked ? 1 : undefined, jx: a.lockRel ? num(a.lockRel[0]) : undefined, jy: a.lockRel ? num(a.lockRel[1]) : undefined, ja: num(a.lockAngle), k: []
+
       };
       if (typeof x.id === 'number' && x.id > 0 && !used.has(x.id)) { n.i = x.id; used.add(x.id); } else todo.push(n);
       if (Array.isArray(x.children)) x.children.forEach(c => n.k.push(mk(c)));
@@ -2030,11 +2249,15 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
       i: n.id, t: n.text, y: n.type, g: n.group ? 1 : 0, m: n.isMember ? 1 : 0,
       o: n.ov != null ? n.ov : undefined, a: n.au != null ? n.au : undefined, b: n.bf != null ? n.bf : undefined,
       q: n.ba != null ? n.ba : undefined, z: n.lkv || undefined, u: n.lkl != null ? n.lkl : undefined,
-      l: n.lv || undefined, c: n.cover ? 1 : 0, h: n.hideKids ? 1 : 0, k: n.children.map(ser)
+      l: n.lv || undefined, c: n.cover ? 1 : 0, h: n.hideKids ? 1 : 0,
+      j: n.lk ? 1 : undefined, jx: n.lk && n.lkx != null ? n.lkx : undefined, jy: n.lk && n.lky != null ? n.lky : undefined, ja: n.lk && n.la0 != null ? n.la0 : undefined,
+      k: n.children.map(ser)
+
     };
   }
   function deser(o, parent, depth) {
-    const n = { id: o.i, text: o.t, type: o.y, parent, children: [], group: !!o.g, depth, isMember: !!o.m, ov: o.o, au: o.a, bf: o.b, ba: o.q, lkv: o.z, lkl: o.u, lv: o.l, cover: !!o.c, hideKids: !!o.h };
+    const n = { id: o.i, text: o.t, type: o.y, parent, children: [], group: !!o.g, depth, isMember: !!o.m, ov: o.o, au: o.a, bf: o.b, ba: o.q, lkv: o.z, lkl: o.u, lv: o.l, cover: !!o.c, hideKids: !!o.h, lk: o.j ? 1 : undefined, lkx: o.jx, lky: o.jy, la0: o.ja };
+
     if (parent) parent.children.push(n);
     o.k.forEach(k => deser(k, n, depth + 1));
     return n;
@@ -2347,7 +2570,9 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     view,
     nodes: () => nodes,
     roots: () => (main ? [main].concat(floats) : []),
-    selected: () => selected,
+        selected: () => selected,
+    pinchOut: ids => pinchOut(ids),
+
     main: () => main,
     visible: n => nodeSet.has(n),
     world: () => world, nodeEls: () => nodeEls, edgeEls: () => edgeEls,
