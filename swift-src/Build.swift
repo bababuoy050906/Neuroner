@@ -21,6 +21,35 @@ body.collapsed #panel{display:none}
 #libList{margin-top:8px}
 .lib-item{display:flex;gap:6px;align-items:center;padding:4px 0}
 .lib-item span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lib-item{min-height:40px;cursor:pointer;border-radius:8px;padding:4px 8px}
+.lib-item small{opacity:.65;font-size:11px;white-space:nowrap}
+.lib-item.sel{background:var(--field);outline:1px solid var(--fieldb)}
+.lib-item{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+.lib-item.drag{opacity:.5}
+.lib-item.drop{outline:2px solid #2A9D8F;background:rgba(42,157,143,.15)}
+#libGhost{position:fixed;z-index:80;pointer-events:none;background:var(--pop);color:var(--fg);border:1px solid var(--fieldb);border-radius:10px;padding:6px 10px;font-size:13px;box-shadow:0 6px 18px rgba(0,0,0,.35);max-width:86vw}
+#libGhost[hidden]{display:none}
+#impBar{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(12px + env(safe-area-inset-bottom));z-index:45;display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;background:var(--pop);color:var(--fg);border:1px solid var(--fieldb);border-radius:16px;padding:8px 10px;box-shadow:0 6px 22px rgba(0,0,0,.35);max-width:94vw}
+#impBar[hidden]{display:none}
+#impBar span{font-size:13px;flex:1 1 100%;text-align:center}
+#impBar button{min-height:44px;min-width:84px;touch-action:manipulation}
+.lib-btns{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
+.lib-btns button,.lib-btns .btn{min-height:40px;min-width:64px;touch-action:manipulation}
+@media (pointer:coarse){.lib-btns button,.lib-btns .btn{min-height:44px}.lib-item{min-height:48px}}
+@media (max-width:480px){.lib-btns button,.lib-btns .btn{flex:1 1 30%}}
+.lib-note{background:#fff3cd;color:#5a4500;border-radius:8px;padding:8px;font-size:12.5px;margin:6px 0}
+.lib-folder{font-size:12px;opacity:.75;margin:4px 0}
+body.dark .lib-note,body.dark #memBanner{background:#4a3b00;color:#ffe9a8}
+#memBanner{position:fixed;left:50%;transform:translateX(-50%);top:calc(8px + env(safe-area-inset-top));z-index:40;background:#fff3cd;color:#5a4500;border-radius:999px;padding:8px 14px;font-size:12.5px;box-shadow:0 2px 10px rgba(0,0,0,.25);cursor:pointer;max-width:92vw;text-align:center;touch-action:manipulation}
+#memBanner[hidden]{display:none}
+#ovDlg{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:60}
+#ovDlg[hidden]{display:none}
+#ovDlg .card{background:var(--pop);color:var(--fg);padding:16px;border-radius:12px;width:min(92vw,340px);box-shadow:0 10px 30px rgba(0,0,0,.4)}
+/* nothing is selectable except text fields: no highlight, magnifier, copy menu or tap flash */
+*{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}
+*::selection{background:transparent}
+input,textarea,[contenteditable],[contenteditable] *{-webkit-user-select:text;user-select:text;-webkit-touch-callout:default}
+input::selection,textarea::selection,[contenteditable] *::selection{background:rgba(42,157,143,.35)}
 #nodebar{position:absolute;z-index:4;display:flex;flex-wrap:wrap;justify-content:center;gap:6px;max-width:min(240px,calc(100% - 8px))
 ;background:var(--pop);border:1px solid var(--fieldb);border-radius:22px;padding:4px;box-shadow:0 4px 14px rgba(0,0,0,.28)}
 #nodebar[hidden]{display:none}
@@ -80,6 +109,26 @@ html,body{overflow:hidden;overscroll-behavior:none;-webkit-text-size-adjust:100%
 #lineLen{position:absolute;left:68px;top:50%;width:var(--vh);height:44px;transform:translate(-50%,-50%) rotate(-90deg)}
 #rpanel input[type=range]::-webkit-slider-runnable-track{height:10px;border-radius:5px;background:var(--line)}
 #rpanel input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:34px;height:34px;border-radius:50%;background:#2A9D8F;border:3px solid #fff;margin-top:-12px;box-shadow:0 1px 5px rgba(0,0,0,.45)}
+/* size knob: sits left of the line knob (or at the right edge when the line knob is hidden) */
+#spanel{--vh:clamp(150px,34vh,300px);position:absolute;right:132px;left:auto;top:50%;transform:translateY(-50%);z-index:4;width:116px;background:var(--pop);color:var(--fg);border:1px solid var(--fieldb);border-radius:14px;padding:10px 8px;box-shadow:0 6px 20px rgba(0,0,0,.28);display:flex;flex-direction:column;align-items:center;gap:6px;font-size:13px}
+#spanel[hidden]{display:none}
+#rpanel[hidden] ~ #spanel{right:8px}
+#sname{color:var(--muted);font-size:11px;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#sizeVal{font-size:24px;font-weight:700;text-align:center;display:block}
+#svwrap{position:relative;width:96px;height:var(--vh)}
+#svticks{position:absolute;left:0;top:0;bottom:0;width:44px}
+#svticks i{position:absolute;right:0;width:8px;height:1.5px;background:var(--muted);bottom:calc(17px + (var(--vh) - 34px) * var(--f) - 1px)}
+#svticks i.maj{width:14px}
+#svticks i b{position:absolute;right:20px;top:-7px;font-size:10px;font-style:normal;font-weight:600;color:var(--muted)}
+#spanel input[type=range]{-webkit-appearance:none;appearance:none;background:transparent;margin:0}
+#sizeLen{position:absolute;left:68px;top:50%;width:var(--vh);height:44px;transform:translate(-50%,-50%) rotate(-90deg)}
+#spanel input[type=range]::-webkit-slider-runnable-track{height:10px;border-radius:5px;background:var(--line)}
+#spanel input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:34px;height:34px;border-radius:50%;background:#2A9D8F;border:3px solid #fff;margin-top:-12px;box-shadow:0 1px 5px rgba(0,0,0,.45)}
+#spanel input[type=range]::-moz-range-track{height:10px;border-radius:5px;background:var(--line)}
+#spanel input[type=range]::-moz-range-thumb{width:28px;height:28px;border-radius:50%;background:#2A9D8F;border:3px solid #fff}
+#spanel button{touch-action:manipulation;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+#sizeLen{touch-action:none}
+@media (max-width:560px),(max-height:520px){#rpanel,#spanel{transform:translateY(-50%) scale(.82);transform-origin:right center;--vh:clamp(110px,30vh,220px)}#spanel{right:104px}#rpanel[hidden] ~ #spanel{right:6px}}
 button.rstep{width:100%;height:42px;font-size:24px;padding:0}
 button.rbig{height:40px;font-size:13px;width:100%;padding:0}
 
@@ -123,13 +172,22 @@ let bodyHTML = #"""
   </details>
   <details class="sec" open>
     <summary>Library</summary>
+    <div id="libNotice" class="lib-note" hidden></div>
+    <div id="libFolder" class="lib-folder">Folder: none</div>
     <input id="libName" placeholder="Name this mind map">
-    <div class="row">
-      <button id="libSave" class="primary">Save to library</button>
+    <div class="lib-btns">
+      <button id="libOpen">Open</button>
+      <button id="libSave" class="primary">Save</button>
+      <button id="libSaveAs">Save as</button>
+      <button id="libRename">Rename</button>
+      <button id="libDel">Delete</button>
+    </div>
+    <div class="lib-btns">
+      <button id="libChoose">Choose folder</button>
+      <button id="libRefresh">Refresh</button>
       <button id="libNew">New map</button>
-            <button id="libExp">Export / import</button>
+      <button id="libExp">Export / import</button>
       <label class="btn">Import file<input type="file" id="impFile" hidden></label>
-
     </div>
     <div id="libList"></div>
   </details>
@@ -190,6 +248,29 @@ let bodyHTML = #"""
       <button id="lineReset" class="rbig">Reset</button>
     </div>
   </aside>
+  <aside id="spanel" hidden>
+    <div class="rhead"><b>Size</b><span id="sname"></span></div>
+    <div class="rcol">
+      <span id="sizeVal">100%</span>
+      <button id="sizePlus" class="rstep" title="Bigger (1 unit)">+</button>
+      <div id="svwrap">
+        <div id="svticks">
+          <i class="maj" style="--f:1"><b>300</b></i>
+          <i style="--f:.875"></i>
+          <i style="--f:.75"></i>
+          <i style="--f:.625"></i>
+          <i class="maj" style="--f:.5"><b>200</b></i>
+          <i style="--f:.375"></i>
+          <i style="--f:.25"></i>
+          <i style="--f:.125"></i>
+          <i class="maj" style="--f:0"><b>100</b></i>
+        </div>
+        <input type="range" id="sizeLen" min="100" max="300" step="1" value="100">
+      </div>
+      <button id="sizeMinus" class="rstep" title="Smaller (1 unit)">−</button>
+      <button id="sizeReset" class="rbig">Reset</button>
+    </div>
+  </aside>
   <textarea id="nodeEdit" hidden rows="1"></textarea>
   <button id="masterTape" title="Tap: cover/uncover the selected box · Hold: cover/uncover everything">🩹</button>
   <button id="ccwBtn" class="rot" title="Counter-clockwise: swap this branch with its previous sibling" disabled>↺</button>
@@ -209,6 +290,18 @@ let bodyHTML = #"""
   </div>
 </div>
 
+<div id="memBanner" hidden></div>
+<div id="impBar" hidden><span id="impMsg"></span><button id="impLock">Unlock</button><button id="impPlace" class="primary">Place</button><button id="impCancel">Cancel</button></div>
+<div id="ovDlg" hidden>
+  <div class="card">
+    <b id="ovMsg"></b>
+    <div class="row">
+      <button id="ovYes" class="primary">Replace</button>
+      <button id="ovCopy">Keep both</button>
+      <button id="ovNo">Cancel</button>
+    </div>
+  </div>
+</div>
 <div id="expDlg" hidden>
   <div class="card">
     <b>Export / import</b>
@@ -277,6 +370,7 @@ window.addEventListener('error', function (e) {
 </html>
 """
 }()
+
 
 
 
