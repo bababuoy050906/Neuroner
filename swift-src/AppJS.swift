@@ -13,6 +13,7 @@ let appJS = #"""
   const levelsBody = $('levelsBody');
   const lineRow = $('lineRow'), lineLen = $('lineLen'), lineVal = $('lineVal'), lineReset = $('lineReset');
   const rpanel = $('rpanel'), rname = $('rname'), lineMinus = $('lineMinus'), linePlus = $('linePlus');
+  const spanel = $('spanel'), sname = $('sname'), sizeLen = $('sizeLen'), sizeVal = $('sizeVal'), sizeReset = $('sizeReset'), sizeMinus = $('sizeMinus'), sizePlus = $('sizePlus');
   const nodebar = $('nodebar'), nbDot = $('nbDot'), nbType = $('nbType'), nbAdd = $('nbAdd'), nbTape = $('nbTape'), nbDup = $('nbDup');
     const nbFixO = $('nbFixO'), nbFixL = $('nbFixL'), nbFixD = $('nbFixD'), nbDel = $('nbDel'), nbRev = $('nbRev');
 
@@ -35,7 +36,7 @@ let appJS = #"""
   // camera follows a moved box: within M pixels of the canvas border the view scrolls at up to V pixels per frame
   const PAN = { M: 80, V: 16 };
   const HELP = 'drag to pan · pinch to zoom · tap a box for tools · double-tap to edit · hold a box to move it, shake it to snap it out';
-  const LIB_KEY = 'mm-lib', DRAFT_KEY = 'mm-draft';
+  const FILE_EXT = '.mindmap';
 
   let main = null, floats = [], nodes = [], lists = [];
   let nodeSet = new Set();                              // same boxes as `nodes`, for instant lookups
@@ -68,9 +69,110 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
   function setNodes(arr) { nodes = arr; nodeSet = new Set(arr); }
 
   /* ---------- storage helpers ---------- */
-  const lsGet = k => { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } };
-  const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } };
-  const lsDel = k => { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } };
+  /* ---------- device files: one folder holds every map (.mindmap) and settings.json ---------- */
+  // native app: the folder picker + security-scoped bookmark live in Swift ("lib" handler).
+  // laptop browser: File System Access folder handle (only a pointer to the folder is remembered, never map data).
+  // anything else: no folder; work stays in memory and Save downloads / Open uploads a file.
+  const FS = (function () {
+    const nat = () => { try { return window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.lib; } catch (e) { return null; } };
+    const mode = nat() ? 'native' : (typeof window.showDirectoryPicker === 'function' ? 'fsa' : 'none');
+    const boot = window.__libBoot || {};
+    const calls = new Map();
+    let cid = 0, dir = null, has = !!boot.has, name = boot.folder || '', needPerm = false;
+    window.__libReply = (id, r) => { const f = calls.get(id); if (f) { calls.delete(id); f(r); } };
+    const call = (op, a, wait) => new Promise(res => {
+      const id = ++cid; calls.set(id, res);
+      try { nat().postMessage(Object.assign({ id, op }, a || {})); } catch (e) { calls.delete(id); res({ ok: false, err: String(e) }); return; }
+      if (wait !== 0) setTimeout(() => { if (calls.delete(id)) res({ ok: false, err: 'timeout' }); }, wait || 30000);
+    });
+    const hdb = () => new Promise((res, rej) => { const rq = indexedDB.open('mm-folder', 1); rq.onupgradeneeded = () => rq.result.createObjectStore('h'); rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); });
+    const hGet = () => hdb().then(d => new Promise(res => { const r = d.transaction('h').objectStore('h').get('dir'); r.onsuccess = () => res(r.result || null); r.onerror = () => res(null); })).catch(() => null);
+    const hPut = h => hdb().then(d => new Promise(res => { const t = d.transaction('h', 'readwrite'); t.objectStore('h').put(h, 'dir'); t.oncomplete = () => res(true); t.onerror = () => res(false); })).catch(() => false);
+    const ready = () => (mode === 'native' ? has : (mode === 'fsa' && !!dir && !needPerm));
+    const fh = (n, create) => dir.getFileHandle(n, { create: !!create });
+    async function init() {
+      if (mode !== 'fsa') return;
+      const h = await hGet(); if (!h) return;
+      try { dir = h; name = h.name; needPerm = (await h.queryPermission({ mode: 'readwrite' })) !== 'granted'; } catch (e) { dir = null; }
+    }
+    async function choose() {
+      if (mode === 'native') { const r = await call('choose', null, 0); if (r && r.ok) { has = true; name = r.folder || ''; return true; } return false; }
+      if (mode !== 'fsa') return false;
+      try {
+        if (dir && needPerm && (await dir.requestPermission({ mode: 'readwrite' })) === 'granted') { needPerm = false; return true; }
+        const h = await window.showDirectoryPicker({ mode: 'readwrite', id: 'mindmap' });
+        dir = h; name = h.name; needPerm = false; await hPut(h);
+        return true;
+      } catch (e) { return false; }
+    }
+    async function list() {
+      if (mode === 'native') { const r = await call('list'); return r.ok ? r.files : []; }
+      const out = [];
+      for await (const [n, h] of dir.entries()) {
+        if (h.kind === 'file' && /\.mindmap$/i.test(n)) { const f = await h.getFile(); out.push({ name: n, t: f.lastModified, size: f.size }); }
+      }
+      return out.sort((a, b) => b.t - a.t);
+    }
+    async function read(n) {
+      if (mode === 'native') { const r = await call('read', { name: n }); return r.ok ? r.text : null; }
+      try { return await (await (await fh(n)).getFile()).text(); } catch (e) { return null; }
+    }
+    async function stat(n) {
+      if (mode === 'native') { const r = await call('stat', { name: n }); return r.ok && r.t != null ? r.t : null; }
+      try { return (await (await fh(n)).getFile()).lastModified; } catch (e) { return null; }
+    }
+    // atomic: the native side writes a temp file and replaces; the browser writes a swap file that replaces the original on close
+    async function write(n, text, bak) {
+      if (mode === 'native') { const r = await call('write', { name: n, text, bak: !!bak }); if (!r.ok) throw new Error(r.err || 'write failed'); return r.t; }
+      if (bak) {
+        try { const old = await (await fh(n)).getFile(); if (old.size) { const b = await (await fh(n + '.bak', true)).createWritable(); await b.write(await old.text()); await b.close(); } } catch (e) { /* no earlier copy yet */ }
+      }
+      const w = await (await fh(n, true)).createWritable();
+      await w.write(text); await w.close();
+      try { await dir.removeEntry(n + '.bak'); } catch (e) { /* none */ }
+      return (await (await fh(n)).getFile()).lastModified;
+    }
+    async function rename(a, b) {
+      if (mode === 'native') { const r = await call('rename', { from: a, to: b }); if (!r.ok) throw new Error(r.err || 'rename failed'); return; }
+      if ((await stat(b)) != null) throw new Error('A file with that name already exists');
+      const txt = await read(a); if (txt == null) throw new Error('file not found');
+      await write(b, txt, false);
+      await dir.removeEntry(a);
+      try { await dir.removeEntry(a + '.bak'); } catch (e) { /* none */ }
+    }
+    async function remove(n) {
+      if (mode === 'native') { const r = await call('remove', { name: n }); if (!r.ok) throw new Error(r.err || 'delete failed'); return; }
+      await dir.removeEntry(n);
+      try { await dir.removeEntry(n + '.bak'); } catch (e) { /* none */ }
+    }
+    return { mode, ready, folder: () => name, needPerm: () => needPerm, init, choose, list, read, stat, write, rename, remove, call };
+  })();
+
+  // app prefs (theme, paint toolbar, last project) in one settings.json inside the folder
+  const MMS = window.MMS = (function () {
+    let S = {}, t = 0;
+    const subs = [];
+    try { const b = window.__libBoot; if (b && b.settings) S = JSON.parse(b.settings) || {}; } catch (e) { S = {}; }
+    async function flush() {
+      clearTimeout(t); t = 0;
+      if (!FS.ready()) return false;
+      try { await FS.write('settings.json', JSON.stringify(S, null, 1), false); return true; } catch (e) { console.error(e); return false; }
+    }
+    const soon = () => { clearTimeout(t); t = setTimeout(flush, 700); };
+    // reads the file in the folder; what the file already holds stays as it is, only missing keys are added from memory
+    async function load() {
+      if (!FS.ready()) return;
+      const txt = await FS.read('settings.json');
+      let o = null; try { o = txt ? JSON.parse(txt) : null; } catch (e) { o = null; }
+      const mine = S;
+      if (o && typeof o === 'object') {
+        S = Object.assign({}, mine, o);
+        subs.forEach(f => { try { f(); } catch (e) { console.error(e); } });
+        if (Object.keys(mine).some(k => !(k in o))) soon();
+      } else if (Object.keys(S).length) soon();
+    }
+    return { get: k => S[k], set(k, v, now) { S[k] = v; if (now) flush(); else soon(); }, on: f => { subs.push(f); }, flush, load };
+  })();
 
   function haptic() {
     try {
@@ -895,8 +997,9 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
   function clearLockOne(m) { m.lk = undefined; m.lkx = undefined; m.lky = undefined; }
   function clearLock(n) { allBelow(n).forEach(clearLockOne); }
   function unlockBranch(U) {                            // U and everything beyond it; the rest of the mass stays locked
-    const all = allBelow(U), jobs = all.filter(m => lockedLine(m) && nodeSet.has(m) && nodeSet.has(m.parent)).map(m => [m, m.x, m.y]);
-    jobs.forEach(q => bakeAt(q[0], q[1], q[2]));
+    const all = allBelow(U), jobs = [];
+    all.forEach(m => { if (!lockedLine(m)) return; const q = posOf(m), pq = posOf(m.parent); if (q && pq) jobs.push([m, q.x, q.y, pq]); });   // collapsed members are fixed at their locked spot too
+    jobs.forEach(q => { const L = Math.max(1, lenK); bakeLock(q[0], (q[1] - q[3].x) / L, (q[2] - q[3].y) / L); });
     all.forEach(clearLockOne);
   }
   function snapMass(n) {                                // positions of a locked branch relative to its box (used when it is snapped out)
@@ -976,6 +1079,24 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     // while the name is typed, the siblings and their branches are one locked piece, so nothing between them changes
     N.la0 = Math.atan2(N.y - p.y, N.x - p.x);
     [N].concat(mem).forEach(m => { m.lk = 1; m.lkx = undefined; m.lky = undefined; });
+    // fan: every pinched box keeps the distance it had from the old parent, now measured from the new box, spread around the line parent → new box
+    (function fan() {
+      const base = Math.atan2(uy, ux), wrap = a => Math.atan2(Math.sin(a), Math.cos(a)), it = [];
+      order.forEach(s => { const q = pos.get(s); if (q) it.push({ s, q, r: Math.max(Math.hypot(q.x - p.x, q.y - p.y), 70), a: wrap(Math.atan2(q.y - p.y, q.x - p.x) - base) }); });
+      if (it.length < 2) return;
+      it.sort((a, b) => a.a - b.a);                     // the order around the parent is kept
+      const rMin = Math.min.apply(null, it.map(o => o.r)), sz = Math.max.apply(null, it.map(o => Math.max(o.s.w || 90, o.s.h || 40)));
+      let step = 2 * Math.asin(Math.min(0.95, (sz * 0.6 + MINGAP) / rMin));
+      step = Math.max(0.3, Math.min(step, 1.1));
+      if (step * (it.length - 1) > 3.0) step = 3.0 / (it.length - 1);
+      it.forEach((o, i) => {
+        const a = base + (i - (it.length - 1) / 2) * step;
+        const dx = N.x + Math.cos(a) * o.r - o.q.x, dy = N.y + Math.sin(a) * o.r - o.q.y;
+        const set = new Set(allBelow(o.s)); set.add(o.s);                      // the box and everything below it turn together with its line, so shapes inside never stretch
+        const da = wrap(a - Math.atan2(o.q.y - p.y, o.q.x - p.x)), cs = Math.cos(da), sn = Math.sin(da), nx = o.q.x + dx, ny = o.q.y + dy;
+        set.forEach(m => { const q = pos.get(m); if (!q) return; const rx = q.x - o.q.x, ry = q.y - o.q.y; pos.set(m, { x: nx + rx * cs - ry * sn, y: ny + rx * sn + ry * cs }); });
+      });
+    })();
     mem.forEach(m => { const q = pos.get(m); if (q) { m.lkx = q.x - N.x; m.lky = q.y - N.y; } });
     restretch();
     selected = null; render();
@@ -1003,8 +1124,48 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
   /* ---------- draw the graph into a <g> (used by screen AND pdf) ---------- */
 
   // the connector line(s) between a box and its parent; a gradient is drawn as short solid segments
-  function edgeInto(n, grp) {
-    const p = n.parent, a = borderPoint(p, n), b = borderPoint(n, p), col = TYPES[n.type].color;
+  /* ---------- per-box size: display only. The layout, the gaps and the collision guard keep the original box size. ---------- */
+  // sz = 1 … 3 (saved as sz). A box grows toward its source (its parent); the side facing away stays where it was.
+  // The central box has no source and grows evenly. In card view the change is toned down to a fifth (300% shows as 140%).
+  let cardSz = false;
+  const szRaw = n => { const v = +n.sz; return v > 1 ? Math.min(3, v) : 1; };
+  const szOf = (n, full) => { const v = szRaw(n); return (cardSz && !full) ? 1 + (v - 1) * 0.2 : v; };
+  function szAnchor(n) {                                // the fixed corner of the box, relative to its centre
+    const p = n.parent || (n.src && nodeSet.has(n.src) ? n.src : null);
+    if (!p || !Number.isFinite(p.x) || !Number.isFinite(n.x)) return [0, 0];
+    let dx = n.x - p.x, dy = n.y - p.y; const L = Math.hypot(dx, dy);
+    if (L < 1e-6) return [0, 0];
+    dx /= L; dy /= L;
+    return [Math.max(-1, Math.min(1, dx * 1.5)) * n.w / 2, Math.max(-1, Math.min(1, dy * 1.5)) * n.h / 2];
+  }
+  function effBox(n, full) {                            // where the box is really drawn
+    const sc = szOf(n, full);
+    if (sc === 1 || !Number.isFinite(n.x)) return { x: n.x, y: n.y, w: n.w, h: n.h, s: 1 };
+    const a = szAnchor(n);
+    return { x: n.x - a[0] * (sc - 1), y: n.y - a[1] * (sc - 1), w: n.w * sc, h: n.h * sc, s: sc };
+  }
+  function szTf(n, cx, cy, sc) {
+    const a = szAnchor(n), ax = cx + a[0], ay = cy + a[1];
+    return 'translate(' + ax + ' ' + ay + ') scale(' + sc + ') translate(' + (-ax) + ' ' + (-ay) + ')';
+  }
+  function setSg(n, g) {                                // the scaled layer of a drawn box (its first child)
+    const sg = g && g.firstChild; if (!sg || sg.nodeType !== 1) return;
+    const sc = szOf(n);
+    if (sc === 1) sg.removeAttribute('transform');
+    else sg.setAttribute('transform', szTf(n, n.dpx != null ? n.dpx : n.x, n.dpy != null ? n.dpy : n.y, sc));
+  }
+  function redrawEdge(n) {
+    const eg = edgeEls.get(n.id);
+    if (eg && n.parent) { while (eg.firstChild) eg.removeChild(eg.firstChild); edgeInto(n, eg); }
+  }
+  function setCardSz(f) {                               // called by the card layer: card view shows the toned-down size
+    f = !!f; if (f === cardSz) return;
+    cardSz = f; if (!world) return;
+    nodes.forEach(n => setSg(n, nodeEls.get(n.id)));
+    nodes.forEach(n => { if (n.parent && (szRaw(n) !== 1 || szRaw(n.parent) !== 1)) redrawEdge(n); });
+  }
+  function edgeInto(n, grp, full) {
+    const p = n.parent, a = borderPoint(effBox(p, full), effBox(n, full)), b = borderPoint(effBox(n, full), effBox(p, full)), col = TYPES[n.type].color;
     const w = Math.max(1.8, 4.2 - 0.6 * n.depth), STEPS = 10;
     if (isGrad(n)) {
       for (let i = 0; i < STEPS; i++) {
@@ -1027,7 +1188,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     for (const n of list) {
       if (!n.parent) continue;
       const grp = S('g', { 'class': 'edge' }, eg);
-      edgeInto(n, grp);
+      edgeInto(n, grp, pre !== 's');
       els.edges.set(n.id, grp);
     }
 
@@ -1047,19 +1208,21 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
       } else tc = textColor([col]);
 
       const rx = n.depth === 0 ? 18 : 10;
+      const sg = S('g', {}, grp);                          // everything of the box (shape, text, tape) is scaled as one unit
+      { const sc = pre === 's' ? szOf(n) : szRaw(n); if (sc !== 1) sg.setAttribute('transform', szTf(n, n.x, n.y, sc)); }
       S('rect', {
         x: n.x - n.w / 2, y: n.y - n.h / 2, width: n.w, height: n.h, rx,
         fill, stroke: dark ? '#ffffff' : '#000000', 'stroke-opacity': dark ? 0.22 : 0.12, 'stroke-width': 1
-      }, grp);
+      }, sg);
       if (n.cover) {                                    // active-recall "patch tape"
-        S('rect', { x: n.x - n.w / 2, y: n.y - n.h / 2, width: n.w, height: n.h, rx, fill: '#F4E7B0', stroke: '#C9B26B', 'stroke-width': 1.5 }, grp);
-        S('line', { x1: n.x - n.w / 2 + 8, y1: n.y - n.h / 2 + 8, x2: n.x + n.w / 2 - 8, y2: n.y + n.h / 2 - 8, stroke: '#C9B26B', 'stroke-width': 1.5, 'stroke-opacity': 0.7 }, grp);
+        S('rect', { x: n.x - n.w / 2, y: n.y - n.h / 2, width: n.w, height: n.h, rx, fill: '#F4E7B0', stroke: '#C9B26B', 'stroke-width': 1.5 }, sg);
+        S('line', { x1: n.x - n.w / 2 + 8, y1: n.y - n.h / 2 + 8, x2: n.x + n.w / 2 - 8, y2: n.y + n.h / 2 - 8, stroke: '#C9B26B', 'stroke-width': 1.5, 'stroke-opacity': 0.7 }, sg);
       } else {
         n.lines.forEach((ln, i) => {
           const t = S('text', {
             x: n.x, y: n.y - n.h / 2 + n.padY + i * n.lh + n.lh / 2 + n.fs * 0.35,
             'text-anchor': 'middle', 'font-family': FONT, 'font-size': n.fs, 'font-weight': n.fontWeight, fill: tc
-          }, grp);
+          }, sg);
           t.textContent = ln;
         });
       }
@@ -1074,11 +1237,12 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     if (!dnode || !target || !world) return;
     const m = target.n, d = dnode;
     if (target.kind === 'connect') {
-      const a = borderPoint(m, d), b = borderPoint(d, m);
+      const a = borderPoint(effBox(m), effBox(d)), b = borderPoint(effBox(d), effBox(m));
       indEls.push(S('line', { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: '#2A9D8F', 'stroke-width': 6, 'stroke-linecap': 'round', 'stroke-opacity': 0.45 }, world));
     }
+    const em = effBox(m);
     indEls.push(S('rect', {
-      x: m.x - m.w / 2 - 4, y: m.y - m.h / 2 - 4, width: m.w + 8, height: m.h + 8, rx: 14, fill: 'none',
+      x: em.x - em.w / 2 - 4, y: em.y - em.h / 2 - 4, width: em.w + 8, height: em.h + 8, rx: 14, fill: 'none',
       stroke: '#2A9D8F', 'stroke-width': 3, 'stroke-opacity': 0.55, 'stroke-dasharray': target.kind === 'merge' ? '6 4' : '0'
     }, world));
   }
@@ -1096,6 +1260,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     applyCamLock();
     applyView();
     applySelection();
+    impStyle();
     if (window.MMP && window.MMP.onRender) window.MMP.onRender();
     if (window.MMM && window.MMM.onRender) window.MMM.onRender();
 
@@ -1109,13 +1274,13 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     if (!world) return;
     for (const n of list) {
       const g = nodeEls.get(n.id);
-      if (g && n.dpx != null) g.setAttribute('transform', 'translate(' + (n.x - n.dpx) + ' ' + (n.y - n.dpy) + ')');
+      if (g && n.dpx != null) { g.setAttribute('transform', 'translate(' + (n.x - n.dpx) + ' ' + (n.y - n.dpy) + ')'); if (szRaw(n) !== 1) setSg(n, g); }
       const eg = edgeEls.get(n.id);
       if (eg && n.parent) { while (eg.firstChild) eg.removeChild(eg.firstChild); edgeInto(n, eg); }
     }
     drawIndicator();
   }
-  const movingList = () => (mover ? mover.sub : (dnode ? [dnode] : []));
+  const movingList = () => (mover ? mover.sub : (dnode ? (imp && imp.drag && imp.drag.root === dnode ? imp.drag.nodes : [dnode]) : []));
   let qraf = 0;
   const scheduleQuick = () => { if (!qraf) qraf = requestAnimationFrame(() => { qraf = 0; quickUpdate(movingList()); }); };
 
@@ -1192,7 +1357,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     nbDel.disabled = !!n && n === main;                  // the centre box cannot be deleted
     applySelection();
     if (n) {
-      typeSel.value = n.type; syncLineUI(n);
+      typeSel.value = n.type; syncLineUI(n); syncSizeUI(n);
       nbDot.style.background = TYPES[n.type].color;
       if (window.MMM && window.MMM.onSelect) window.MMM.onSelect(n);
       syncLockBtn();
@@ -1217,7 +1382,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     nodebar.hidden = !ok;
     if (!ok) editor.hidden = true;
     else {
-      const sx = selected.x * k + view.x, sy = selected.y * k + view.y, hh = selected.h * k / 2;
+      const eb = effBox(selected), sx = eb.x * k + view.x, sy = eb.y * k + view.y, hh = eb.h * k / 2;
       const bw = nodebar.offsetWidth || 190, bh = nodebar.offsetHeight || 44;
       let top = sy - hh - bh - 8; if (top < 4) top = sy + hh + 8;
       const left = Math.max(4, Math.min(sx - bw / 2, r.width - bw - 4));
@@ -1229,13 +1394,15 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     }
     // the line knob lives at the far right (CSS); it only shows while a box with an incoming line is chosen
     rpanel.hidden = !(selected && selected.parent && !dnode && !mover && !editNode && nodeSet.has(selected) && !lockedLine(selected));
+    spanel.hidden = !(selected && !dnode && !mover && !editNode && nodeSet.has(selected));      // the size knob works on every box
 
     const f = uhTarget();
     if (f && nodeSet.has(f)) {
       unhide.hidden = false;
       unhide.textContent = f.hideKids ? '▸ Show ' + countKids(f) : '▾ Hide';
-      unhide.style.left = Math.max(4, f.x * k + view.x + f.w * k / 2 - 70) + 'px';
-      unhide.style.top = (f.y * k + view.y + f.h * k / 2 + 6) + 'px';
+      const ef = effBox(f);
+      unhide.style.left = Math.max(4, ef.x * k + view.x + ef.w * k / 2 - 70) + 'px';
+      unhide.style.top = (ef.y * k + view.y + ef.h * k / 2 + 6) + 'px';
     } else unhide.hidden = true;
   }
 
@@ -1281,12 +1448,12 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
   const ptrs = new Map(); let drag = null, pinch = null;
   const rel = e => { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
   const toWorld = p => ({ x: (p.x - view.x) / view.k, y: (p.y - view.y) / view.k });
-  const inRect = (m, x, y) => Math.abs(x - m.x) <= m.w / 2 && Math.abs(y - m.y) <= m.h / 2;
+  const inRect = (m, x, y) => { const e = effBox(m); return Math.abs(x - e.x) <= e.w / 2 && Math.abs(y - e.y) <= e.h / 2; };
 
   canvas.addEventListener('pointerdown', e => {
     if (e.target.closest('#toolbar') || e.target.closest('#editor') || e.target.closest('#nodebar') ||
         e.target.closest('#unhide') || e.target.closest('#nodeEdit') || e.target.closest('#masterTape') ||
-        e.target.closest('#rpanel') || e.target.closest('.rot')) return;
+        e.target.closest('#rpanel') || e.target.closest('#spanel') || e.target.closest('.rot')) return;
     freeCam();                                          // touching the canvas releases the camera lock
     if (editNode) nodeEdit.blur();
     canvas.setPointerCapture(e.pointerId);
@@ -1344,6 +1511,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     zoomAt(p.x, p.y, Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015)));
   }, { passive: false });
   rpanel.addEventListener('wheel', e => e.stopPropagation(), { passive: true });
+  spanel.addEventListener('wheel', e => e.stopPropagation(), { passive: true });
 
   /* ---------- tap / double-tap ---------- */
   function tapNode(n) {
@@ -1360,8 +1528,8 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     editNode = n; n.fresh = !!fresh;
     select(n, false);
     const r = canvas.getBoundingClientRect(), k = view.k;
-    const sx = n.x * k + view.x, sy = n.y * k + view.y;
-    const w = Math.max(n.w * k, 150), h = Math.max(n.h * k, 44);
+    const eb = effBox(n), sx = eb.x * k + view.x, sy = eb.y * k + view.y;
+    const w = Math.max(eb.w * k, 150), h = Math.max(eb.h * k, 44);
     nodeEdit.hidden = false;
     nodeEdit.style.width = w + 'px'; nodeEdit.style.height = h + 'px';
     nodeEdit.style.left = Math.max(4, Math.min(sx - w / 2, r.width - w - 4)) + 'px';
@@ -1454,7 +1622,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
       depth: parent ? parent.depth + 1 : o.depth, isMember: parent ? !!o.isMember : false,
       ov: o.ov, lv: o.lv ? Object.assign({}, o.lv) : undefined, lkv: parent && o.lkv ? o.lkv.slice() : undefined,
       lkl: parent ? o.lkl : undefined, ba: parent ? o.ba : undefined,
-      cover: !!o.cover, hideKids: parent ? !!o.hideKids : false
+      cover: !!o.cover, hideKids: parent ? !!o.hideKids : false, sz: o.sz
     };
     if (parent) parent.children.push(c);
     if (full) o.children.forEach(k => cloneBranch(k, c, true));
@@ -1565,6 +1733,13 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     layoutAll(); render(); touch();
   };
 
+  function syncSizeUI(n) {
+    if (!n) return;
+    const v = Math.round(szRaw(n) * 100);
+    sname.textContent = short(n.text);
+    sizeLen.value = v; sizeVal.textContent = v + '%';
+    sizeReset.disabled = n.sz == null;
+  }
   function syncLineUI(n) {
     const has = !!(n && n.parent);
     lineRow.hidden = !has;
@@ -1612,7 +1787,8 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     } else if (dnode) {
       dnode.fx = w.x - grab.x; dnode.fy = w.y - grab.y;
       dnode.x = dnode.fx; dnode.y = dnode.fy;
-      tether(dnode);                                    // keep the offset from the source up to date
+      tether(dnode);
+      if (imp && imp.drag && imp.drag.root === dnode) impShift();                                    // keep the offset from the source up to date
       target = findTarget();
     }
   }
@@ -1656,7 +1832,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     floats = floats.filter(f => f !== n);
     tether(n);                                          // fixed distance from the source box from now on
     floats.push(n);                                     // last = drawn on top
-    n.hideKids = n.children.length > 0;
+    n.hideKids = n.children.length > 0 && !impLift(n);
     dnode = n; target = null; mover = null; lastPtr = { x: fp.x, y: fp.y };
     editor.hidden = true; select(null, false);
     layoutAll();
@@ -1749,11 +1925,12 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
   }
 
   function findTarget() {
-    const d = dnode;
-    for (const m of nodes) if (m !== d && inRect(m, d.x, d.y)) return { kind: 'merge', n: m };
+    const d = dnode, own = !!imp && imp.ids.has(d.id);
+    const skip = m => m === d || (own && imp.ids.has(m.id));      // the imported network never targets itself
+    for (const m of nodes) if (!skip(m) && inRect(m, d.x, d.y)) return { kind: 'merge', n: m };
     let best = null, bg = SNAP + 1e-6;
     for (const m of nodes) {
-      if (m === d) continue;
+      if (skip(m)) continue;
       const g = Math.hypot(Math.max(0, Math.abs(m.x - d.x) - (m.w + d.w) / 2), Math.max(0, Math.abs(m.y - d.y) - (m.h + d.h) / 2));
       if (g <= bg) { bg = g; best = m; }
     }
@@ -1835,6 +2012,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
   }
   function dropDrag() {
     const d = dnode, t = findTarget();
+    if (imp) imp.drag = null;
     const kz = view.k, sx0 = d.x * kz + view.x, sy0 = d.y * kz + view.y;   // where the dragged box is on screen right now
     dnode = null; target = null; lastPtr = null;
     if (t && t.kind === 'merge') { mergeText(d, t.n); return; }
@@ -1935,6 +2113,31 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
   lineMinus.onclick = () => nudge(-1);
   linePlus.onclick = () => nudge(1);
 
+  /* ---------- size knob: only this box and its own lines are touched, no re-layout ---------- */
+  let szRaf = 0;
+  function szAfter() {                                  // overlays that depend on the shown size (tape areas, selection frames)
+    if (szRaf) return;
+    szRaf = requestAnimationFrame(() => {
+      szRaf = 0;
+      if (window.MMM && window.MMM.onRender) window.MMM.onRender();
+      if (window.MMP && window.MMP.onRender) window.MMP.onRender();
+      placeBar();
+    });
+  }
+  function setSize(n, v) {
+    v = Math.max(1, Math.min(3, v));
+    n.sz = v > 1.0001 ? Math.round(v * 100) / 100 : undefined;
+    syncSizeUI(n);
+    setSg(n, nodeEls.get(n.id));
+    redrawEdge(n); n.children.forEach(c => { if (nodeSet.has(c)) redrawEdge(c); });
+    szAfter(); touch();
+  }
+  sizeLen.addEventListener('input', () => { const n = selected; if (n && nodeSet.has(n)) setSize(n, (+sizeLen.value) / 100); });
+  const nudgeSize = d => { const n = selected; if (!n || !nodeSet.has(n)) return; setSize(n, Math.max(100, Math.min(300, Math.round(szRaw(n) * 100) + d)) / 100); };
+  sizeMinus.onclick = () => nudgeSize(-1);
+  sizePlus.onclick = () => nudgeSize(1);
+  sizeReset.addEventListener('click', () => { const n = selected; if (n && nodeSet.has(n)) setSize(n, 1); });
+
   /* ---------- level sliders: whole map, or re-based on the chosen box ---------- */
   // Same mechanics both ways: a slider sets a multiplier for every line that ends at one level,
   // 100% = the default layout distance. Re-based mode just counts levels from the chosen box.
@@ -2025,15 +2228,15 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     dark = d;
     document.body.classList.toggle('dark', dark);
     themeBtn.textContent = dark ? '☀' : '☾';
-    if (save) { try { localStorage.setItem('mm-theme', dark ? 'dark' : 'light'); } catch (e) { /* ignore */ } }
+    if (save) MMS.set('theme', dark ? 'dark' : 'light');
     if (nodes.length) render();
   }
   themeBtn.onclick = () => setTheme(!dark, true);
   (function initTheme() {
-    let t = null;
-    try { t = localStorage.getItem('mm-theme'); } catch (e) { /* ignore */ }
+    const t = MMS.get('theme');
     const pref = t ? t === 'dark' : !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
     setTheme(pref, false);
+    MMS.on(() => { const v = MMS.get('theme'); if (v && (v === 'dark') !== dark) setTheme(v === 'dark', false); });
   })();
 
   /* ---------- mind map → text (the reverse of the generator) ---------- */
@@ -2083,6 +2286,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     if (n.lkv) a.lock = n.lkv;
     if (n.lkl != null) a.lockLength = n.lkl;
         if (n.lv) a.levelSliders = n.lv;
+    if (n.sz != null) a.size = n.sz;
     if (n.lk) { a.locked = 1; if (n.lkx != null && n.lky != null) a.lockRel = [r2(n.lkx), r2(n.lky)]; if (n.la0 != null) a.lockAngle = n.la0; }
 
     if (Object.keys(a).length) o.layout = a;
@@ -2123,7 +2327,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
         i: 0, t: String(x.text == null ? '' : x.text), y: TYPES[x.type] ? x.type : 'label',
         g: x.group ? 1 : 0, m: x.member ? 1 : 0, o: num(a.lengthSet), a: num(a.tidy), b: num(a.clearance), q: num(a.rotation),
         z: lock, u: num(a.lockLength), l: a.levelSliders && typeof a.levelSliders === 'object' ? Object.assign({}, a.levelSliders) : undefined,
-        c: x.covered ? 1 : 0, h: x.collapsed ? 1 : 0, j: a.locked ? 1 : undefined, jx: a.lockRel ? num(a.lockRel[0]) : undefined, jy: a.lockRel ? num(a.lockRel[1]) : undefined, ja: num(a.lockAngle), k: []
+        sz: (v => (v > 1 ? Math.min(3, v) : undefined))(num(a.size)), c: x.covered ? 1 : 0, h: x.collapsed ? 1 : 0, j: a.locked ? 1 : undefined, jx: a.lockRel ? num(a.lockRel[0]) : undefined, jy: a.lockRel ? num(a.lockRel[1]) : undefined, ja: num(a.lockAngle), k: []
 
       };
       if (typeof x.id === 'number' && x.id > 0 && !used.has(x.id)) { n.i = x.id; used.add(x.id); } else todo.push(n);
@@ -2175,6 +2379,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     if (t[0] === '{' || /\.(mindmap|json)$/i.test(name || '')) {
       let o;
       try { o = JSON.parse(t); } catch (e) { statusEl.textContent = 'That is not valid map data: ' + e.message; return; }
+      if (o && o.app === 'mindmap' && o.snap) { guard(() => applyPacked(o, '', 0)); return; }   // a .mindmap project file (upload fallback)
       if (!o || o.format !== FMT || !o.root) { statusEl.textContent = 'That data is not a mind map.'; return; }
       if (typeof o.version === 'number' && o.version > FMT_V) { statusEl.textContent = 'That file comes from a newer version of the app.'; return; }
       guard(() => applyImport(o, isFile));
@@ -2249,14 +2454,14 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
       i: n.id, t: n.text, y: n.type, g: n.group ? 1 : 0, m: n.isMember ? 1 : 0,
       o: n.ov != null ? n.ov : undefined, a: n.au != null ? n.au : undefined, b: n.bf != null ? n.bf : undefined,
       q: n.ba != null ? n.ba : undefined, z: n.lkv || undefined, u: n.lkl != null ? n.lkl : undefined,
-      l: n.lv || undefined, c: n.cover ? 1 : 0, h: n.hideKids ? 1 : 0,
+      l: n.lv || undefined, c: n.cover ? 1 : 0, h: n.hideKids ? 1 : 0, sz: n.sz != null ? n.sz : undefined,
       j: n.lk ? 1 : undefined, jx: n.lk && n.lkx != null ? n.lkx : undefined, jy: n.lk && n.lky != null ? n.lky : undefined, ja: n.lk && n.la0 != null ? n.la0 : undefined,
       k: n.children.map(ser)
 
     };
   }
   function deser(o, parent, depth) {
-    const n = { id: o.i, text: o.t, type: o.y, parent, children: [], group: !!o.g, depth, isMember: !!o.m, ov: o.o, au: o.a, bf: o.b, ba: o.q, lkv: o.z, lkl: o.u, lv: o.l, cover: !!o.c, hideKids: !!o.h, lk: o.j ? 1 : undefined, lkx: o.jx, lky: o.jy, la0: o.ja };
+    const n = { id: o.i, text: o.t, type: o.y, parent, children: [], group: !!o.g, depth, isMember: !!o.m, ov: o.o, au: o.a, bf: o.b, ba: o.q, lkv: o.z, lkl: o.u, lv: o.l, sz: +o.sz > 1 ? Math.min(3, +o.sz) : undefined, cover: !!o.c, hideKids: !!o.h, lk: o.j ? 1 : undefined, lkx: o.jx, lky: o.jy, la0: o.ja };
 
     if (parent) parent.children.push(n);
     o.k.forEach(k => deser(k, n, depth + 1));
@@ -2297,18 +2502,12 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     layoutAll(); buildLevelControls(); render();
     statusEl.textContent = nodes.length + ' boxes · ' + HELP;
   }
-    function saveDraftOld() {
-
-    const s = snapshot();
-    if (!s) { lsDel(DRAFT_KEY); return; }
-    lsSet(DRAFT_KEY, { name: mapName, dirty, snap: s });
-  }
     // the heavy saving (undo copy + draft) never runs while a stroke is being drawn or right after the pencil lifts
   function settle() {
     if (window.MMP && window.MMP.busy && window.MMP.busy()) { draftT = setTimeout(settle, 400); return; }
     pushHist(); saveDraft();
   }
-    function touch() { dirty = true; clearTimeout(draftT); draftT = setTimeout(settle, 500); if (store) store.request(); }
+    function touch() { if (imp) return; dirty = true; clearTimeout(draftT); draftT = setTimeout(settle, 500); if (store) store.request(); }
 
 
 
@@ -2321,6 +2520,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     return true;
   };
   function pushHist() {
+    if (imp) return;
     const s = snapshot(true); if (!s) return;
     s.view = null;                                      // panning/zooming is not an undo step
     const ink = s.ink; s.ink = undefined;               // ink is kept by reference (each stroke is stored once), not re-converted every time
@@ -2333,7 +2533,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
 
   function resetHist() { hist = []; hi = -1; pushHist(); updateUR(); }
   function stepHist(dir) {
-    if (dnode || mover) return;
+    if (dnode || mover || imp) return;
     if (editNode) nodeEdit.blur();
     clearTimeout(draftT); pushHist();                   // save any change that is still waiting
     const j = hi + dir;
@@ -2347,19 +2547,66 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     statusEl.textContent = (dir < 0 ? 'Undid' : 'Redid') + ' · ' + nodes.length + ' boxes';
   }
 
-  function saveToLib(name) {
-    const s = snapshot(); if (!s) return;
-    const lib = lsGet(LIB_KEY) || {};
-    lib[name] = { t: Date.now(), snap: s };
-    if (!lsSet(LIB_KEY, lib)) { statusEl.textContent = 'Could not save: storage is unavailable.'; return; }
-    mapName = name; dirty = false; saveDraft(); renderLib();
-    statusEl.textContent = 'Saved “' + name + '” to the library.';
+  /* ---------- library: every map is one .mindmap file in the chosen folder ---------- */
+  const libNotice = $('libNotice'), libFolder = $('libFolder'), memBanner = $('memBanner'), ovDlg = $('ovDlg');
+  const lower = s => String(s).toLowerCase();
+  const fileOf = nm => (String(nm || '').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '_').replace(/^[.\s]+|[\s.]+$/g, '').slice(0, 80) || 'mindmap') + FILE_EXT;
+  const nameOf = f => String(f || '').replace(/\.mindmap$/i, '');
+  const fmtDate = t => { try { return new Date(t).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }); } catch (e) { return ''; } };
+  async function freeFile(nm) {                            // the file for a name: one that already exists (any capitalization) is reused, never a numbered copy
+    const want = lower(fileOf(nm));
+    try { const hit = (await FS.list()).find(f => lower(f.name) === want); if (hit) return hit.name; } catch (e) { /* ignore */ }
+    return fileOf(nm);
   }
-  function openLib(name) {
-    const lib = lsGet(LIB_KEY) || {};
-    if (!lib[name]) return;
-    restore(lib[name].snap);
-    mapName = name; dirty = false; libName.value = name; saveDraft(); renderLib(); resetHist();
+  // the project file: everything about the map in one place (boxes, layout, locks, levels, view, cards, drawings, settings)
+  function pack(nm, t, snap) {
+    const s = Object.assign({}, snap), ink = s.ink && s.ink.s ? s.ink.s : [];
+    delete s.ink;
+    return JSON.stringify({ app: 'mindmap', fv: 1, name: nm, t, snap: s, ink });
+  }
+  function ask(file, why) {
+    return new Promise(res => {
+      $('ovMsg').textContent = '“' + nameOf(file) + '” ' + why + '. Replace it with this map?';
+      ovDlg.hidden = false;
+      const done = v => { ovDlg.hidden = true; res(v); };
+      $('ovYes').onclick = () => done('over'); $('ovCopy').onclick = () => done('copy'); $('ovNo').onclick = () => done('cancel');
+    });
+  }
+  function applyPacked(o, file, t) {
+    const s = o.snap, arr = Array.isArray(o.ink) ? o.ink : [];
+    s.ink = arr.length ? { s: arr } : undefined;
+    restore(s);
+    libName.value = o.name || '';
+    if (file) { mapName = nameOf(file); dirty = false; store.adopt(file, t); MMS.set('last', file); }
+    else { mapName = o.name || ''; dirty = true; store.forget(); saveDraft(); }
+    resetHist(); applyView(); renderLib();
+  }
+  async function openFile(file, silent) {
+    if (!file || !FS.ready()) return false;
+    let o = null, note = '';
+    for (const f of [file, file + '.bak']) {
+      try {
+        const text = await FS.read(f); if (text == null) continue;
+        const j = JSON.parse(text);
+        if (j && j.app === 'mindmap' && j.snap) { o = j; if (f !== file) note = ' (its backup copy: the file was damaged)'; break; }
+      } catch (e) { console.error(e); }
+    }
+    if (!o) { if (!silent) statusEl.textContent = 'Could not open “' + nameOf(file) + '”.'; return false; }
+    try { applyPacked(o, file, (await FS.stat(file)) || 0); }
+    catch (e) { console.error(e); statusEl.textContent = 'Could not open “' + nameOf(file) + '”: ' + e.message; return false; }
+    libSel = file;
+    statusEl.textContent = 'Opened “' + nameOf(file) + '”' + note + ' · ' + nodes.length + ' boxes.';
+    return true;
+  }
+  async function saveToLib(name) {
+    if (!main) return false;
+    if (!FS.ready()) {
+      if (FS.mode === 'none') { store.download(name); return true; }       // no folder possible: a normal download
+      if (!(await chooseFolder())) { statusEl.textContent = 'Choose a folder to save your maps.'; return false; }
+    }
+    const ok = await store.saveAs(name);
+    renderLib();
+    return ok;
   }
   function newMap() {
     main = null; floats = []; setNodes([]); lists = []; mapName = ''; dirty = false;
@@ -2369,28 +2616,36 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     freeCam(); disarmDel();
     selected = null; editing = null; editor.hidden = true; unhide.hidden = true; nodebar.hidden = true; rpanel.hidden = true;
     levelsBody.innerHTML = '<small>Generate a map first.</small>';
-        lsDel(DRAFT_KEY); renderLib(); resetHist(); syncRot(); saveDraft();
-
+    store.forget(); MMS.set('last', ''); renderLib(); resetHist(); syncRot();
     statusEl.textContent = 'Type or paste text, then press Generate.';
   }
-  function renderLib() {
-    const lib = lsGet(LIB_KEY) || {};
+  let libSel = '', rlTok = 0;
+  function noticeText() {
+    if (FS.ready()) return '';
+    if (FS.mode === 'none') return 'This browser cannot keep a folder. Your work stays in memory: Save downloads a .mindmap file, Open loads one again.';
+    if (FS.needPerm()) return 'Allow access to your folder to keep saving. Until then your work is only in memory.';
+    return 'No folder yet. Press Choose folder to start saving. Until then your work is only in memory.';
+  }
+  async function renderLib() {
+    const tok = ++rlTok, ok = FS.ready(), msg = noticeText();
+    libNotice.hidden = !msg; libNotice.textContent = msg;
+    memBanner.hidden = ok || !main; memBanner.textContent = FS.mode === 'none' ? 'Not saved · use Save to download' : 'Not saved to a folder yet · tap to choose';
+    libFolder.textContent = ok ? 'Folder: ' + FS.folder() : 'Folder: none';
     if (mapName && document.activeElement !== libName) libName.value = mapName;
+    let files = [];
+    if (ok) { try { files = await FS.list(); } catch (e) { files = []; } }
+    if (tok !== rlTok) return;
     libList.innerHTML = '';
-    const names = Object.keys(lib).sort((a, b) => lib[b].t - lib[a].t);
-    if (!names.length) { libList.innerHTML = '<small>No saved maps yet.</small>'; return; }
-    names.forEach(nm => {
-      const row = document.createElement('div'); row.className = 'lib-item';
-      const s = document.createElement('span'); s.textContent = nm + (nm === mapName && !dirty ? ' ✓' : '');
-      const o = document.createElement('button'); o.className = 'mini'; o.textContent = 'Open';
-      const d = document.createElement('button'); d.className = 'mini'; d.textContent = '🗑';
-      o.onclick = () => guard(() => openLib(nm));
-      let armed = false;
-      d.onclick = () => {
-        if (!armed) { armed = true; d.textContent = 'Sure?'; setTimeout(() => { armed = false; d.textContent = '🗑'; }, 2500); }
-        else { const l = lsGet(LIB_KEY) || {}; delete l[nm]; lsSet(LIB_KEY, l); renderLib(); }
-      };
-      row.append(s, o, d);
+    if (!ok) { libList.innerHTML = '<small>Maps appear here once a folder is chosen.</small>'; return; }
+    if (!files.length) { libList.innerHTML = '<small>No .mindmap files in this folder yet.</small>'; return; }
+    const curF = store.file();
+    files.forEach(f => {
+      const row = document.createElement('div'); row.className = 'lib-item' + (f.name === libSel ? ' sel' : '');
+      const s = document.createElement('span'); s.textContent = nameOf(f.name) + (f.name === curF ? ' ✓' : '');
+      const d = document.createElement('small'); d.textContent = fmtDate(f.t);
+      row.append(s, d);
+      row.dataset.f = f.name; bindRowDrag(row, f.name);
+      row.onclick = () => { if (performance.now() < noClickUntil) return; libSel = f.name; libName.value = nameOf(f.name); [...libList.children].forEach(c => c.classList.toggle('sel', c === row)); };
       libList.appendChild(row);
     });
   }
@@ -2401,10 +2656,16 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     $('dlgName').value = mapName || (main ? main.text : '');
     dlg.hidden = false;
   }
-  const guard = fn => { if (dirty && main) showSaveDialog(fn); else fn(); };
-  $('dlgSave').onclick = () => {
+  // autosave keeps the file current, so leaving a map only waits for it; the save dialog appears only when no folder can be written
+  const guard = fn => {
+    if (!(dirty && main)) { fn(); return; }
+    if (!FS.ready()) { showSaveDialog(fn); return; }
+    store.flush().then(ok => { if (ok) fn(); else showSaveDialog(fn); });
+  };
+  $('dlgSave').onclick = async () => {
     const nm = $('dlgName').value.trim(); if (!nm) return;
-    saveToLib(nm); dlg.hidden = true;
+    if (!(await saveToLib(nm))) return;
+    dlg.hidden = true;
     const a = dlgAfter; dlgAfter = null; if (a) a();
   };
   $('dlgNo').onclick = () => {
@@ -2412,15 +2673,62 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     const a = dlgAfter; dlgAfter = null; if (a) a();
   };
   $('dlgCancel').onclick = () => { dlg.hidden = true; dlgAfter = null; };
-  $('libSave').onclick = () => {
+  $('libOpen').onclick = () => {
+    if (!FS.ready()) { if (FS.mode === 'none') $('impFile').click(); else chooseFolder(); return; }
+    if (!libSel) { statusEl.textContent = 'Tap a map in the list, then press Open.'; return; }
+    const f = libSel; guard(() => openFile(f));
+  };
+  $('libSave').onclick = () => { if (main) saveToLib(mapName || libName.value.trim() || main.text); };
+  $('libSaveAs').onclick = () => {
     if (!main) return;
-    const nm = libName.value.trim() || main.text;
+    const nm = libName.value.trim();
+    if (!nm) { statusEl.textContent = 'Type a name for the new file first.'; libName.focus(); return; }
     saveToLib(nm);
   };
+  $('libRename').onclick = async () => {
+    const from = libSel || store.file(), nn = libName.value.trim();
+    if (!FS.ready() || !from) { statusEl.textContent = 'Tap a map in the list first.'; return; }
+    if (!nn) { statusEl.textContent = 'Type the new name first.'; libName.focus(); return; }
+    const to = fileOf(nn); if (to === from) return;
+    try {
+      if (from === store.file()) await store.flush();
+      await FS.rename(from, to);
+      if (from === store.file()) { mapName = nameOf(to); store.adopt(to, await FS.stat(to)); MMS.set('last', to); }
+      else if (MMS.get('last') === from) MMS.set('last', to);
+      libSel = to;
+      statusEl.textContent = 'Renamed to “' + nameOf(to) + '”.';
+    } catch (e) { statusEl.textContent = 'Could not rename: ' + e.message; }
+    renderLib();
+  };
+  let libDelArm = 0;
+  $('libDel').onclick = async () => {
+    const b = $('libDel'), f = libSel || store.file();
+    if (!FS.ready() || !f) { statusEl.textContent = 'Tap a map in the list first.'; return; }
+    if (!libDelArm) {
+      b.textContent = 'Tap again';
+      statusEl.textContent = 'Delete “' + nameOf(f) + '” from the folder? Tap Delete again to confirm.';
+      libDelArm = setTimeout(() => { libDelArm = 0; b.textContent = 'Delete'; }, 3000);
+      return;
+    }
+    clearTimeout(libDelArm); libDelArm = 0; b.textContent = 'Delete';
+    try {
+      const wasCur = f === store.file();
+      if (wasCur) store.forget();
+      await FS.remove(f);
+      if (wasCur) newMap();
+      if (MMS.get('last') === f) MMS.set('last', '');
+      libSel = '';
+      statusEl.textContent = 'Deleted “' + nameOf(f) + '”.';
+    } catch (e) { statusEl.textContent = 'Could not delete: ' + e.message; }
+    renderLib();
+  };
+  $('libChoose').onclick = () => { chooseFolder(); };
+  $('libRefresh').onclick = () => { renderLib(); };
+  memBanner.onclick = () => { panel.classList.add('open'); };
   $('libNew').onclick = () => guard(newMap);
 
   document.addEventListener('visibilitychange', () => {
-        if (document.hidden) { flushAll(); needPrompt = dirty; }
+        if (document.hidden) { flushAll(); needPrompt = dirty && !FS.ready(); }
 
     else if (needPrompt) { needPrompt = false; if (dirty && main) showSaveDialog(); }
   });
@@ -2468,8 +2776,9 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
   function contentBounds() {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     nodes.forEach(n => {
-      x0 = Math.min(x0, n.x - n.w / 2); x1 = Math.max(x1, n.x + n.w / 2);
-      y0 = Math.min(y0, n.y - n.h / 2); y1 = Math.max(y1, n.y + n.h / 2);
+      const e = effBox(n, true);
+      x0 = Math.min(x0, e.x - e.w / 2); x1 = Math.max(x1, e.x + e.w / 2);
+      y0 = Math.min(y0, e.y - e.h / 2); y1 = Math.max(y1, e.y + e.h / 2);
     });
     const ib = window.MMP && window.MMP.bounds ? window.MMP.bounds() : null;
     if (ib) { x0 = Math.min(x0, ib.x0); y0 = Math.min(y0, ib.y0); x1 = Math.max(x1, ib.x1); y1 = Math.max(y1, ib.y1); }
@@ -2569,6 +2878,9 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
   window.MMX = {
     view,
     nodes: () => nodes,
+    eff: n => effBox(n),
+    setCardSz: f => setCardSz(f),
+    setSize: (id, v) => { const n = byId(id); if (n && nodeSet.has(n)) { select(n, false); setSize(n, v); return true; } return false; },
     roots: () => (main ? [main].concat(floats) : []),
         selected: () => selected,
     pinchOut: ids => pinchOut(ids),
@@ -2645,119 +2957,288 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     if (store) store.flush();
   }
 
-  var store = (function () {
-    const MIN_WAIT = 400, MAX_WAIT = 3000, NAT_GAP = 2500;
-    const nat = () => { try { return window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.autosave; } catch (e) { return null; } };
-    let db = null, opening = null, dbFail = false, fails = 0, busy = false, again = false, warned = false;
-    let seq = 0, ready = false, pending = false, timer = 0, natT = 0, viewT = 0, firstReq = 0, lastReq = 0, lastNat = 0, legacyDone = false;
-    const base = { idb: { ink: new Map(), key: null }, nat: { ink: new Map(), key: null } };   // what each store already holds
-    const hard = () => !!(mover || dnode || (window.MMP && window.MMP.hard && window.MMP.hard()));
-    const warn = m => { if (!warned) { warned = true; statusEl.textContent = m; } };
-    const timeout = ms => new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms));
+  /* ---------- drag one project onto another: it is imported as a floating, locked network (preview, then Place / Cancel) ---------- */
+  var imp = null;
+  const ghost = document.createElement('div'); ghost.id = 'libGhost'; ghost.hidden = true; document.body.appendChild(ghost);
+  const impBar = $('impBar'), impLockBtn = $('impLock');
+  let rowDrag = null, noClickUntil = 0;
+  document.addEventListener('touchmove', e => { if (rowDrag && rowDrag.on) e.preventDefault(); }, { passive: false });   // the list does not scroll while a row is dragged
+  function bindRowDrag(row, f) {
+    row.addEventListener('pointerdown', e => {
+      if (imp || (e.pointerType === 'mouse' && e.button !== 0)) return;
+      const d = { f, id: e.pointerId, x0: e.clientX, y0: e.clientY, on: false, row, t: 0, over: null };
+      rowDrag = d;
+      if (e.pointerType !== 'mouse') d.t = setTimeout(() => dragBegin(d), 300);      // touch / pen: hold, then drag (a swipe still scrolls the list)
+    });
+  }
+  function dragBegin(d) {
+    if (rowDrag !== d || d.on) return;
+    d.on = true; haptic(); d.row.classList.add('drag'); ghost.hidden = false;
+    try { d.row.setPointerCapture(d.id); } catch (e) { /* ignore */ }
+  }
+  document.addEventListener('pointermove', e => {
+    const d = rowDrag; if (!d || e.pointerId !== d.id) return;
+    if (!d.on) {
+      const far = Math.hypot(e.clientX - d.x0, e.clientY - d.y0);
+      if (e.pointerType === 'mouse') { if (far > 5) dragBegin(d); }
+      else if (far > 10) { clearTimeout(d.t); rowDrag = null; }
+      if (!d.on) return;
+    }
+    const el = document.elementFromPoint(e.clientX, e.clientY), r = el && el.closest ? el.closest('.lib-item') : null;
+    const over = r && r !== d.row && r.dataset.f ? r : null;
+    if (d.over !== over) { if (d.over) d.over.classList.remove('drop'); if (over) over.classList.add('drop'); d.over = over; }
+    ghost.textContent = over ? 'Release to import “' + nameOf(d.f) + '” into “' + nameOf(over.dataset.f) + '”' : '“' + nameOf(d.f) + '”';
+    ghost.style.left = Math.max(8, Math.min(e.clientX + 12, innerWidth - 8 - ghost.offsetWidth)) + 'px';
+    ghost.style.top = Math.max(8, e.clientY - 48) + 'px';
+  });
+  function dragEnd(e, ok) {
+    const d = rowDrag; if (!d || e.pointerId !== d.id) return;
+    clearTimeout(d.t); rowDrag = null;
+    if (!d.on) return;
+    noClickUntil = performance.now() + 400;
+    ghost.hidden = true; d.row.classList.remove('drag'); if (d.over) d.over.classList.remove('drop');
+    try { d.row.releasePointerCapture(d.id); } catch (err) { /* ignore */ }
+    if (ok && d.over) startImport(d.f, d.over.dataset.f);          // released anywhere else: nothing happens
+  }
+  document.addEventListener('pointerup', e => dragEnd(e, true));
+  document.addEventListener('pointercancel', e => dragEnd(e, false));
 
-    function openDB() {
-      if (db) return Promise.resolve(db);
-      if (opening) return opening;
-      opening = new Promise((res, rej) => {
-        let rq;
-        try { rq = indexedDB.open('mm-autosave', 1); } catch (e) { rej(e); return; }
-        rq.onupgradeneeded = () => {
-          const d = rq.result;
-          if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv');
-          if (!d.objectStoreNames.contains('ink')) d.createObjectStore('ink');
-        };
-        rq.onsuccess = () => {
-          db = rq.result;
-          db.onclose = () => { db = null; opening = null; };
-          db.onversionchange = () => { try { db.close(); } catch (e) { /* ignore */ } db = null; opening = null; };
-          res(db);
-        };
-        rq.onerror = () => rej(rq.error || new Error('indexedDB'));
-        rq.onblocked = () => rej(new Error('indexedDB blocked'));
+  const impAlive = () => { const a = []; walkAll(n => { if (imp.ids.has(n.id)) a.push(n); }); return a; };
+  const impMassRoots = () => impAlive().filter(n => !n.parent || !imp.ids.has(n.parent.id));
+  function impBarShow() {
+    $('impMsg').textContent = 'Importing “' + imp.name + '”: hold its centre box and drag it onto a box (merge) or next to one (connect).';
+    impLockBtn.textContent = imp.locked ? 'Unlock' : 'Lock';
+    impBar.hidden = false;
+  }
+  // dims the destination and makes it untouchable; keeps the drawings of the import in step with the cluster
+  function impStyle() {
+    if (!imp) return;
+    nodeEls.forEach((el, id) => { const m = imp.ids.has(id); el.style.opacity = m ? '' : '0.3'; el.style.pointerEvents = m ? '' : 'none'; });
+    edgeEls.forEach((el, id) => { el.style.opacity = imp.ids.has(id) ? '' : '0.3'; });
+    if (nodeSet.has(imp.R)) { imp.lx = imp.R.x - imp.cx; imp.ly = imp.R.y - imp.cy; if (window.MMP && window.MMP.impMove) window.MMP.impMove(imp.lx, imp.ly); }
+  }
+  function impLift(n) {                                  // the centre box of the import is picked up: everything moves with it, nothing is hidden
+    if (!imp || n !== imp.R) return false;
+    const list = impAlive().map(m => ({ n: m, x: m.x, y: m.y, fl: !m.parent, fx: m.fx, fy: m.fy }));
+    imp.drag = { root: n, x0: n.x, y0: n.y, list, nodes: list.map(q => q.n) };
+    return true;
+  }
+  function impShift() {                                  // the whole network is moved as one rigid piece
+    const g = imp.drag, dx = dnode.x - g.x0, dy = dnode.y - g.y0;
+    for (const q of g.list) { q.n.x = q.x + dx; q.n.y = q.y + dy; if (q.fl) { q.n.fx = q.fx + dx; q.n.fy = q.fy + dy; } }
+    imp.lx = dnode.x - imp.cx; imp.ly = dnode.y - imp.cy;
+    if (window.MMP && window.MMP.impMove) window.MMP.impMove(imp.lx, imp.ly);
+  }
+  async function startImport(srcF, dstF) {
+    if (imp || srcF === dstF || !FS.ready()) return;
+    let o = null;
+    try { const t = await FS.read(srcF); const j = t && JSON.parse(t); if (j && j.app === 'mindmap' && j.snap && j.snap.main) o = j; } catch (e) { console.error(e); }
+    if (!o) { statusEl.textContent = 'Could not read “' + nameOf(srcF) + '”.'; return; }
+    if (main && dirty && !(await store.flush())) { showSaveDialog(() => startImport(srcF, dstF)); return; }
+    if (store.file() !== dstF && !(await openFile(dstF))) return;
+    if (!main) return;
+    clearTimeout(draftT); pushHist();                    // the destination as it is now: Place adds exactly one step after this
+    const s0 = snapshot(true), before = { ink: s0.ink }; s0.ink = undefined; before.j = JSON.stringify(s0);
+    fixIds();
+    const rc = canvas.getBoundingClientRect(), cx = (rc.width / 2 - view.x) / view.k, cy = (rc.height / 2 - view.y) / view.k;
+    const sn = o.snap, R = deser(sn.main, null, 0);
+    const sats = (sn.floats || []).map(f => { const r = deser(f.n, null, f.d); r.fx = cx + f.x; r.fy = cy + f.y; r._s = f.s; r.sox = f.ox; r.soy = f.oy; return r; });
+    R.fx = cx; R.fy = cy; R.hideKids = false; R.src = null;
+    const roots = [R].concat(sats), byOld = new Map(), idm = new Map();
+    roots.forEach(r => (function w(n) { byOld.set(n.id, n); n.children.forEach(w); })(r));
+    roots.forEach(r => (function w(n) { const old = n.id; n.id = nextId++; idm.set(old, n.id); n.children.forEach(w); })(r));   // ids never collide with the destination
+    sats.forEach(r => { r.src = r._s != null ? (byOld.get(r._s) || null) : null; delete r._s; });
+    roots.forEach(r => floats.push(r));
+    imp = { src: srcF, dst: dstF, name: nameOf(srcF), before, ids: new Set(idm.values()), idm, cd: sn.cd, locked: true, cx, cy, R, drag: null };
+    layoutAll();
+    roots.forEach(r => lockBranch(r));                   // every distance and angle inside stays exactly as it was
+    if (window.MMP && window.MMP.impStart) window.MMP.impStart(o.ink || [], cx, cy);
+    panel.classList.remove('open');
+    layoutAll(); render(); impBarShow();
+    statusEl.textContent = 'Importing “' + imp.name + '” into “' + nameOf(dstF) + '”. Nothing is saved until you press Place.';
+  }
+  impLockBtn.onclick = () => {
+    if (!imp || dnode || mover) return;
+    const rs = impMassRoots();
+    if (imp.locked) rs.forEach(r => unlockBranch(r)); else rs.forEach(r => lockBranch(r));
+    imp.locked = !imp.locked;
+    layoutAll(); render(); impBarShow();
+    statusEl.textContent = imp.locked ? 'The imported network is locked: every distance and angle stays.' : 'Unlocked: the imported network can be reshaped.';
+  };
+  function impPlace() {
+    if (!imp || dnode || mover) return;
+    const I = imp, alive = new Set();
+    walkAll(n => { if (I.ids.has(n.id)) alive.add(n.id); });
+    const idm = new Map(); I.idm.forEach((nid, old) => { if (alive.has(nid)) idm.set(old, nid); });
+    const dx = nodeSet.has(I.R) ? I.R.x - I.cx : (I.lx || 0), dy = nodeSet.has(I.R) ? I.R.y - I.cy : (I.ly || 0);
+    imp = null; impBar.hidden = true;
+    if (window.MMP && window.MMP.impEnd) window.MMP.impEnd(true, dx, dy);
+    if (window.MMM && window.MMM.merge) window.MMM.merge(I.cd, idm);     // tape areas, cards, ranges, connectors, schedules
+    layoutAll(); render();
+    dirty = true; clearTimeout(draftT); pushHist(); store.request();      // one undo step, saved into the destination's file
+    statusEl.textContent = 'Imported “' + I.name + '” into “' + (mapName || nameOf(I.dst)) + '”.';
+    renderLib();
+  }
+  function impCancel() {
+    if (!imp || dnode || mover) return;
+    const I = imp; imp = null; impBar.hidden = true;
+    if (window.MMP && window.MMP.impEnd) window.MMP.impEnd(false);
+    const sn = JSON.parse(I.before.j); sn.ink = I.before.ink; restore(sn);
+    statusEl.textContent = 'Import cancelled. “' + (mapName || nameOf(I.dst)) + '” is unchanged.';
+  }
+  $('impPlace').onclick = impPlace;
+  $('impCancel').onclick = impCancel;
+
+  /* ---------- moving the old app-internal storage into the folder (once) ---------- */
+  const legacy = (function () {
+    const ls = k => { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } };
+    const hasDB = async nm => { try { if (indexedDB.databases) return (await indexedDB.databases()).some(d => d.name === nm); } catch (e) { /* ignore */ } return true; };
+    function openOld() {
+      return new Promise(res => {
+        let rq; try { rq = indexedDB.open('mm-autosave'); } catch (e) { res(null); return; }
+        rq.onupgradeneeded = () => { try { rq.transaction.abort(); } catch (e) { /* ignore */ } };   // it did not exist: nothing to move
+        rq.onsuccess = () => res(rq.result); rq.onerror = () => res(null); rq.onblocked = () => res(null);
       });
-      opening.catch(() => { opening = null; });
-      return opening;
     }
-    function idbLoad() {
-      return openDB().then(d => new Promise((res, rej) => {
-        const tx = d.transaction(['kv', 'ink'], 'readonly');
-        const rs = tx.objectStore('kv').get('state'), ri = tx.objectStore('ink').getAll();
-        tx.oncomplete = () => res({ rec: rs.result || null, ink: ri.result || [] });
-        tx.onerror = tx.onabort = () => rej(tx.error || new Error('read failed'));
-      }));
-    }
-    // one atomic transaction: the new strokes, the removed strokes and the state either all land or none do
-    function idbCommit(rec, put, del) {
-      return openDB().then(d => new Promise((res, rej) => {
-        const tx = d.transaction(['kv', 'ink'], 'readwrite');
-        const ink = tx.objectStore('ink'), kv = tx.objectStore('kv');
-        put.forEach(o => ink.put(o, o.i));
-        del.forEach(id => ink.delete(id));
-        kv.put(rec, 'state');
-        tx.oncomplete = () => res();
-        tx.onerror = () => rej(tx.error || new Error('write failed'));
-        tx.onabort = () => rej(tx.error || new Error('write aborted'));
-      }));
-    }
-    function plan(b, cur, key) {
-      const put = [], del = [];
-      cur.forEach((o, id) => { if (b.ink.get(id) !== o) put.push(o); });
-      b.ink.forEach((o, id) => { if (!cur.has(id)) del.push(id); });
-      return { put, del, same: b.key === key && !put.length && !del.length };
-    }
-    // only used when the database cannot be used at all and there is no file copy either
-    function fallback(cap) {
-      if (nat()) return;
-      let ok = false;
+    async function idb() {
+      if (!window.indexedDB || !(await hasDB('mm-autosave'))) return null;
+      const db = await openOld(); if (!db) return null;
       try {
-        const s = main ? snapshot() : null;
-        if (s) ok = lsSet(DRAFT_KEY, { name: cap.name, dirty: cap.dirty, snap: s }); else { lsDel(DRAFT_KEY); ok = true; }
-      } catch (e) { ok = false; }
-      if (!ok) warn('Auto-save is not possible right now (storage is full or blocked). Use Export / import → Save file to keep a copy.');
+        if (!db.objectStoreNames.contains('kv') || !db.objectStoreNames.contains('ink')) return null;
+        return await new Promise(res => {
+          const tx = db.transaction(['kv', 'ink'], 'readonly'), a = tx.objectStore('kv').get('state'), b = tx.objectStore('ink').getAll();
+          tx.oncomplete = () => res({ rec: a.result || null, ink: b.result || [] });
+          tx.onerror = tx.onabort = () => res(null);
+        });
+      } catch (e) { return null; } finally { try { db.close(); } catch (e) { /* ignore */ } }
     }
-    function idbError(err) {
-      console.error(err);
-      db = null; opening = null;
-      if (err && err.name === 'QuotaExceededError') {
-        dbFail = true;
-        warn('Auto-save: the database is full. Use Export / import → Save file to keep a copy.');
-        return;
-      }
-      if (++fails >= 5) { dbFail = true; warn('Auto-save to the database stopped working. A backup copy is kept instead.'); return; }
-      setTimeout(request, 800 * fails);
+    function toDraft(rec, inkList) {
+      if (!rec || rec.empty || !rec.json) return null;
+      const s = JSON.parse(rec.json), m = new Map(), arr = [];
+      inkList.forEach(o => { if (o && typeof o.i === 'number') m.set(o.i, o); });
+      (rec.order || []).forEach(id => { const o = m.get(id); if (o) arr.push(o); });
+      s.ink = arr.length ? { s: arr } : undefined;
+      return { name: rec.name || '', dirty: !!rec.dirty, snap: s };
     }
-    function commit(force) {
-      let cap;
-      try { cap = captureState(); } catch (err) { console.error(err); return; }
-      const rec = { v: 1, seq: ++seq, t: Date.now(), name: cap.name, dirty: cap.dirty, json: cap.json, order: cap.order, empty: cap.empty, txt: cap.txt };
-      const now = performance.now();
-      if (!dbFail) {                                                   // 1) IndexedDB (asynchronous, written by the browser)
-        const pl = plan(base.idb, cap.cur, cap.key);
-        if (!pl.same) {
-          if (busy) again = true;
-          else {
-            busy = true;
-            Promise.race([idbCommit(rec, pl.put, pl.del), timeout(8000)]).then(() => {
-              base.idb.ink = cap.cur; base.idb.key = cap.key; busy = false; fails = 0;
-              if (!legacyDone) { legacyDone = true; lsDel(DRAFT_KEY); }   // the old single-key draft is no longer needed
-              if (again) { again = false; request(); }
-            }, err => { busy = false; again = false; idbError(err); });
-          }
+    async function read() {
+      const out = { maps: [], draft: null, theme: null, paint: null, any: false }, c = [];
+      const lib = ls('mm-lib');
+      if (lib && typeof lib === 'object') Object.keys(lib).forEach(k => { if (lib[k] && lib[k].snap) out.maps.push({ name: k, t: lib[k].t || 0, snap: lib[k].snap }); });
+      try { const r = await idb(); if (r && r.rec) c.push({ t: r.rec.t || 0, d: toDraft(r.rec, r.ink) }); } catch (e) { console.error(e); }
+      try {
+        const b = window.__nativeBoot;
+        if (b && b.state) { const rec = JSON.parse(b.state); c.push({ t: rec.t || 0, d: toDraft(rec, (b.ink || []).map(x => { try { return JSON.parse(x); } catch (e) { return null; } })) }); }
+      } catch (e) { console.error(e); }
+      c.sort((a, b) => b.t - a.t);
+      if (c.length) out.draft = c[0].d; else { const lg = ls('mm-draft'); if (lg && lg.snap) out.draft = { name: lg.name || '', dirty: !!lg.dirty, snap: lg.snap }; }
+      try { out.theme = localStorage.getItem('mm-theme'); } catch (e) { /* ignore */ }
+      out.paint = ls('mm-paint2');
+      out.any = !!(out.maps.length || out.draft || out.theme || out.paint);
+      return out;
+    }
+    async function clear() {
+      ['mm-lib', 'mm-draft', 'mm-view', 'mm-theme', 'mm-paint2'].forEach(k => { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } });
+      ['mm-autosave', 'mm-mirror'].forEach(n => { try { indexedDB.deleteDatabase(n); } catch (e) { /* ignore */ } });
+      if (FS.mode === 'native') await FS.call('legacyClear');
+    }
+    return { read, clear };
+  })();
+  const sameMap = (a, b) => { try { const x = JSON.parse(a), y = JSON.parse(b); return JSON.stringify(x.snap) === JSON.stringify(y.snap) && JSON.stringify(x.ink) === JSON.stringify(y.ink); } catch (e) { return false; } };
+  // copy every old map and the draft to the folder, check each copy, and only then delete the old data; any failure keeps everything
+  async function migrate() {
+    if (!FS.ready()) return null;
+    let L; try { L = await legacy.read(); } catch (e) { console.error(e); return null; }
+    if (!L.any) return null;
+    try {
+      const have = new Map((await FS.list()).map(f => [lower(f.name), f.name]));
+      let draftFile = '', draftName = '';
+      const place = async (nm, t, snap, isDraft) => {
+        const text = pack(nm, t, snap), f = have.get(lower(fileOf(nm))) || fileOf(nm);       // same name (any capitalization): replaced, never a numbered copy
+        const ex = have.has(lower(f)) ? await FS.read(f) : null;
+        if (ex == null || !sameMap(ex, text)) {
+          await FS.write(f, text, false);
+          if ((await FS.read(f)) !== text) throw new Error('the copy of “' + nm + '” did not verify');
+          have.set(lower(f), f);
         }
-      } else fallback(cap);
-      const n = nat();                                                  // 2) a second copy as files inside the app
-      if (n) {
-        const pn = plan(base.nat, cap.cur, cap.key);
-        if (!pn.same) {
-          if (force || now - lastNat >= NAT_GAP) {
-            try {
-              for (let i = 0; i < pn.put.length; i += 300) n.postMessage({ put: pn.put.slice(i, i + 300).map(o => [o.i, JSON.stringify(o)]) });
-              n.postMessage({ state: JSON.stringify(rec), del: pn.del });
-              base.nat.ink = cap.cur; base.nat.key = cap.key; lastNat = now;
-            } catch (err) { console.error(err); }
-          } else { clearTimeout(natT); natT = setTimeout(request, Math.max(150, NAT_GAP - (now - lastNat) + 50)); }
-        }
+        if (isDraft) draftFile = f;
+      };
+      for (const m of L.maps) await place(m.name, m.t, m.snap, false);
+      const d = L.draft;
+      if (d) {
+        draftName = d.name || (d.snap.main && d.snap.main.t) || 'Recovered draft';
+        if (d.dirty || !L.maps.some(m => m.name === d.name)) await place(draftName, Date.now(), d.snap, true);
+        else draftFile = fileOf(d.name);
       }
+      if (L.theme && MMS.get('theme') == null) MMS.set('theme', L.theme);
+      if (L.paint && MMS.get('paint') == null) MMS.set('paint', L.paint);
+      if (draftFile && !MMS.get('last')) MMS.set('last', draftFile);
+      if (!(await MMS.flush())) throw new Error('settings.json could not be written');
+      const back = JSON.parse((await FS.read('settings.json')) || 'null');
+      if (!back || (L.theme && back.theme == null) || (L.paint && back.paint == null)) throw new Error('settings.json did not verify');
+      await legacy.clear();
+      return { draftFile, draftName };
+    } catch (e) {
+      console.error(e);
+      statusEl.textContent = 'Your older maps could not all be copied to the folder (' + e.message + '). They were kept where they are.';
+      return null;
+    }
+  }
+
+  /* ---------- auto-save into the project file: debounced, atomic (temp + replace, one .bak), idle-time, never while drawing or dragging ---------- */
+  var store = (function () {
+    const MIN_WAIT = 1200, MAX_WAIT = 6000;
+    const cur = { file: '', t: 0 };                      // the open project's file, and its modified time when we last read or wrote it
+    let ready = false, pending = false, timer = 0, firstReq = 0, lastReq = 0, rev = 0, chain = Promise.resolve(true);
+    let blocked = false, viewDirty = false, lastKey = null, lastInk = null, lastBak = 0, fails = 0;
+    const strCache = new WeakMap();                      // a stroke is turned into text once, not at every save
+    const hard = () => !!(mover || dnode || (window.MMP && window.MMP.hard && window.MMP.hard()));
+    const strOf = o => { let s = strCache.get(o); if (s == null) { s = JSON.stringify(o); strCache.set(o, s); } return s; };
+    const enqueue = fn => { chain = chain.then(fn, fn); return chain; };
+    const build = (cap, nm, t) => '{"app":"mindmap","fv":1,"name":' + JSON.stringify(nm) + ',"t":' + t + ',"snap":' + cap.json + ',"ink":[' + cap.order.map(id => strOf(cap.cur.get(id))).join(',') + ']}';
+    const inkSame = m => !!lastInk && lastInk.size === m.size && [...m].every(([k, v]) => lastInk.get(k) === v);
+    const showName = () => { if (document.activeElement !== libName) libName.value = mapName; };
+
+    async function doCommit(force, explicit) {
+      if (imp) return true;                            // an import preview is never written to the file
+      if (!main) return true;
+      if (!FS.ready()) return false;
+      let cap; try { cap = captureState(); } catch (e) { console.error(e); return false; }
+      if (cap.empty) return true;
+      if (!mapName) { cur.file = ''; cur.t = 0; }       // a new or imported map: it gets its own file
+      let renamed = false;
+      if (!cur.file) { cur.file = await freeFile(mapName || main.text); cur.t = (await FS.stat(cur.file)) || 0; mapName = nameOf(cur.file); showName(); renamed = true; }   // an existing file of that name is replaced silently
+      const key = cap.json + '|' + cap.order.join(',');
+      if (!explicit && !renamed && key === lastKey && !viewDirty && inkSame(cap.cur)) return true;
+      const rv = rev; let file = cur.file;
+      const st = await FS.stat(file);
+      if (st != null && Math.abs(st - cur.t) > 2) {      // the file changed on disk since it was opened
+        let a;
+        if (force && !explicit) a = 'copy';              // the app is leaving: never ask, never overwrite, keep both
+        else { blocked = true; try { a = await ask(file, 'changed on disk since it was opened'); } finally { blocked = false; } }
+        if (a === 'cancel') return false;
+        if (a === 'copy') { file = await freeFile(nameOf(file) + ' (copy)'); cur.t = 0; mapName = nameOf(file); showName(); renamed = true; }
+        else cur.t = st;
+        cur.file = file;
+      }
+      const now = Date.now(), wantBak = false;
+      const t = await FS.write(file, build(cap, mapName, now), wantBak);
+      if (wantBak) lastBak = now;
+      cur.t = t; lastKey = key; lastInk = cap.cur; viewDirty = false;
+      if (rev === rv) dirty = false;                     // nothing changed while writing: the file is current
+      if (MMS.get('last') !== file) MMS.set('last', file);
+      if (renamed) renderLib();
+      return true;
+    }
+    function attempt(force, explicit) {
+      return enqueue(async () => {
+        try { const ok = await doCommit(force, explicit); if (ok) fails = 0; return ok; }
+        catch (err) {
+          console.error(err);
+          statusEl.textContent = 'Could not save to the folder: ' + (err && err.message ? err.message : err) + '. Your map is still open here.';
+          if (++fails <= 5) setTimeout(request, 4000 * fails);
+          return false;
+        }
+      });
     }
     function arm() {
       clearTimeout(timer);
@@ -2765,110 +3246,95 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
     }
     function run() {
       timer = 0;
-      if (hard()) { timer = setTimeout(run, 200); return; }            // never while a stroke is being drawn or a box is dragged
+      if (hard() || blocked) { timer = setTimeout(run, 300); return; }     // never while a stroke is drawn, a box is dragged, or a question is open
       firstReq = 0;
-      commit(false);
+      const go = () => attempt(false, false);
+      if (window.requestIdleCallback) window.requestIdleCallback(go, { timeout: 2500 }); else go();
     }
     function request() {
+      rev++;
       if (!ready) { pending = true; return; }
       const t = performance.now();
       if (!firstReq) firstReq = t;
       lastReq = t; arm();
     }
-    function putView() { try { localStorage.setItem('mm-view', JSON.stringify({ t: Date.now(), x: view.x, y: view.y, k: view.k })); } catch (e) { /* ignore */ } }
-    function viewSoon() { if (!ready) return; clearTimeout(viewT); viewT = setTimeout(putView, 800); }
-    function loadView() { try { return JSON.parse(localStorage.getItem('mm-view') || 'null'); } catch (e) { return null; } }
+    function viewSoon() { if (ready) viewDirty = true; }               // pan / zoom are written with the next save, not on their own
     function flush() {
-      clearTimeout(timer); timer = 0; firstReq = 0; clearTimeout(viewT);
-      if (!ready) return;
-      putView();
-      commit(true);
+      clearTimeout(timer); timer = 0; firstReq = 0;
+      MMS.flush();
+      if (!ready || !main) return Promise.resolve(true);
+      if (!FS.ready()) return Promise.resolve(false);
+      return attempt(true, false);
     }
-
-    const inkMapOf = list => { const m = new Map(); list.forEach(o => { if (o && typeof o.i === 'number') m.set(o.i, o); }); return m; };
-    const rank = c => (c.src === 'idb' ? 0 : c.src === 'native' ? 1 : 2);
-    async function candidates() {
-      const out = [];
+    function saveAs(name) {
+      clearTimeout(timer); timer = 0; firstReq = 0;
+      return enqueue(async () => {
+        try {
+          const f = await freeFile(name);                  // the same name (any capitalization) is replaced silently
+          if (f !== cur.file) { cur.file = f; cur.t = (await FS.stat(f)) || 0; mapName = nameOf(f); showName(); }
+          const ok = await doCommit(true, true);
+          if (ok) statusEl.textContent = 'Saved “' + mapName + '”.';
+          return ok;
+        } catch (err) { console.error(err); statusEl.textContent = 'Could not save: ' + err.message; return false; }
+      });
+    }
+    function download(name) {                          // no folder is possible in this browser
+      let cap; try { cap = captureState(); } catch (e) { return; }
+      if (cap.empty) return;
+      const f = fileOf(name);
       try {
-        const r = await Promise.race([idbLoad(), timeout(3500)]);
-        if (r && r.rec) out.push({ src: 'idb', t: r.rec.t || 0, rec: r.rec, inkMap: inkMapOf(r.ink) });
-        else if (r) base.idb.ink = inkMapOf(r.ink);
-      } catch (err) { console.error(err); }
-      try {
-        const b = window.__nativeBoot;
-        if (b && b.state) {
-          const rec = JSON.parse(b.state), ink = [];
-          (b.ink || []).forEach(s => { try { const o = JSON.parse(s); if (o && typeof o.i === 'number') ink.push(o); } catch (e) { /* skip a damaged stroke */ } });
-          out.push({ src: 'native', t: rec.t || 0, rec, inkMap: inkMapOf(ink) });
-        }
-      } catch (err) { console.error(err); }
-      const lg = lsGet(DRAFT_KEY);
-      if (lg && lg.snap) out.push({ src: 'legacy', t: 0, rec: { legacy: lg.snap, name: lg.name, dirty: lg.dirty }, inkMap: new Map() });
-      out.sort((a, b) => (b.t - a.t) || (rank(a) - rank(b)));
-      return out;
+        const u = URL.createObjectURL(new Blob([build(cap, name, Date.now())], { type: 'application/json' })), a = document.createElement('a');
+        a.href = u; a.download = f; document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(u), 4000);
+        mapName = name; dirty = false; statusEl.textContent = 'Downloaded “' + f + '”.';
+      } catch (e) { statusEl.textContent = 'Could not save the file: ' + e.message; }
     }
-    // after the start-up restore: tells each store what it already holds, so the first save only writes what is missing
-    function adopt(used, cands) {
-      cands.forEach(c => { if (c.rec && c.rec.seq > seq) seq = c.rec.seq; });
-      const idb = cands.find(c => c.src === 'idb'), nt = cands.find(c => c.src === 'native');
-      const same = c => !!(c && used && !used.rec.legacy && c.t === used.t);
-      base.idb.ink = same(idb) ? used.inkMap : (idb ? idb.inkMap : base.idb.ink);
-      base.nat.ink = same(nt) ? used.inkMap : (nt ? nt.inkMap : new Map());
-      base.idb.key = null; base.nat.key = null;
-      const stale = !same(idb) || (!!nat() && !same(nt));
-      ready = true;
-      if (pending || stale) { pending = false; request(); }
-    }
-    // a saved copy that could not be opened is kept aside instead of being overwritten
-    function keepBad(c) {
-      openDB().then(d => { d.transaction('kv', 'readwrite').objectStore('kv').put({ t: Date.now(), src: c.src, rec: c.rec }, 'bad-' + Date.now()); }).catch(() => { /* best effort */ });
-    }
-    return { request, flush, candidates, adopt, keepBad, viewSoon, loadView };
+    const adopt = (file, t) => { cur.file = file; cur.t = t || 0; lastKey = null; lastInk = null; viewDirty = false; };
+    const forget = () => { cur.file = ''; cur.t = 0; lastKey = null; lastInk = null; clearTimeout(timer); timer = 0; firstReq = 0; };
+    const start = () => { ready = true; if (pending) { pending = false; request(); } };
+    return { request, flush, viewSoon, saveAs, download, adopt, forget, start, file: () => cur.file };
   })();
+  window.__mmFlush = () => flushAll();
 
-  function applyCandidate(c, partial) {
-    const rec = c.rec;
-    if (rec.legacy) {                                                  // the old single-key draft
-      restore(rec.legacy);
-      mapName = rec.name || ''; dirty = !!rec.dirty; libName.value = mapName; renderLib(); resetHist();
-      if (dirty) showSaveDialog();
-      return true;
-    }
-    if (rec.empty) {                                                   // "New map" was the last thing done
-      if (rec.txt) {
-        input.value = rec.txt; mapName = ''; dirty = false; resetHist();
-        levelsBody.innerHTML = '<small>Generate a map first.</small>';
-        statusEl.textContent = 'Type or paste text, then press Generate.';
-      } else { input.value = SAMPLE; generate(true); }
-      return true;
-    }
-    const s = JSON.parse(rec.json), arr = [];
-    let miss = 0;
-    (rec.order || []).forEach(id => { const o = c.inkMap.get(id); if (o) arr.push(o); else miss++; });
-    if (miss && !partial) return false;                                // this copy is incomplete: try another one first
-    s.ink = arr.length ? { s: arr } : undefined;
-    restore(s);
-    mapName = rec.name || ''; dirty = !!rec.dirty; libName.value = mapName; renderLib(); resetHist();
-    const mv = store.loadView();                                       // the last pan / zoom, saved separately
-    if (mv && mv.t >= (rec.t || 0) && Number.isFinite(mv.x) && Number.isFinite(mv.y) && mv.k > 0) { view.x = mv.x; view.y = mv.y; view.k = mv.k; applyView(); }
-    if (miss) statusEl.textContent = miss + ' drawing stroke' + (miss > 1 ? 's' : '') + ' could not be recovered.';
-    if (dirty) showSaveDialog();
+  async function chooseFolder() {
+    if (!(await FS.choose())) { renderLib(); return false; }
+    try { await MMS.load(); } catch (e) { console.error(e); }
+    let r = null; try { r = await migrate(); } catch (e) { console.error(e); }
+    if (r && r.draftFile && main && !store.file() && (mapName || main.text) === r.draftName) store.adopt(r.draftFile, (await FS.stat(r.draftFile)) || 0);
+    libSel = '';
+    renderLib();
+    if (main) { dirty = true; store.request(); }          // the map that is open right now is written to the folder
     return true;
+  }
+  // no folder yet: show the old draft (or the newest old map) from memory so nothing looks lost; it is copied once a folder is chosen
+  async function bootLegacy() {
+    try {
+      const L = await legacy.read();
+      const d = L.draft || (L.maps.length ? L.maps.slice().sort((a, b) => b.t - a.t)[0] : null);
+      if (!d) return false;
+      restore(d.snap); mapName = d.name || ''; dirty = true; libName.value = mapName; resetHist();
+      return true;
+    } catch (e) { console.error(e); return false; }
   }
   async function bootFromStore() {
     statusEl.textContent = 'Opening your last map…';
-    let cands = [];
-    try { cands = await store.candidates(); } catch (err) { console.error(err); }
-    let used = null;
-    const tryOne = (c, partial) => {
-      try { return applyCandidate(c, partial); }
-      catch (err) { console.error(err); store.keepBad(c); statusEl.textContent = 'One saved copy could not be opened. A backup of it was kept aside.'; return false; }
-    };
-    for (const c of cands) { if (tryOne(c, false)) { used = c; break; } }
-    if (!used) for (const c of cands) { if (tryOne(c, true)) { used = c; break; } }
-    if (!used) { input.value = SAMPLE; generate(true); }
-    store.adopt(used, cands);
+    try { await FS.init(); } catch (e) { console.error(e); }
+    if (FS.ready()) {
+      try { await MMS.load(); } catch (e) { console.error(e); }
+      try { await migrate(); } catch (e) { console.error(e); }
+    }
+    let opened = false;
+    const last = MMS.get('last');
+    if (FS.ready() && last) { try { opened = await openFile(last, true); } catch (e) { console.error(e); } }
+    if (!opened && !FS.ready()) opened = await bootLegacy();
+    if (!opened) { input.value = SAMPLE; generate(true); }
+    if (!opened || !FS.ready()) panel.classList.add('open');            // no last project (or no folder): show the library
+    renderLib();
+    if (!FS.ready()) statusEl.textContent = noticeText();
+    store.start();
   }
+  window.addEventListener('focus', () => renderLib());
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) renderLib(); });
   function bootAfterParse() {                                          // wait until the painting script has also started
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bootFromStore, { once: true });
     else bootFromStore();
@@ -2889,6 +3355,7 @@ Jan Ingenhousz discovered in 1779 that light is essential for plants. Dr. Melvin
   else if (dirty) showSaveDialog();
 })();
 """#
+
 
 
 
